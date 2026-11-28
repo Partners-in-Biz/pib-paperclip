@@ -1,6 +1,22 @@
 import { runCalendarCheck } from "./calendar-check.js";
 import { getCadenceRecord, setCadenceRecord } from "./cadence-record.js";
-import { createAccessGuard, jobCompanyIds, GROWTH_TOOL_NAMES, registerCanvasCards, normalizeToolResult, registerGrowthTools, type AccessGuard, type GrowthToolsHost } from "@partnersinbiz/pib-plugin-kit";
+import {
+  createAccessGuard,
+  jobCompanyIds,
+  GROWTH_TOOL_NAMES,
+  listManagedCrmCompanyIds,
+  NOT_AMONG_YOUR_COMPANIES,
+  ownCompaniesOf,
+  parseClientParam,
+  permissionRefusal,
+  registerCanvasCards,
+  normalizeToolResult,
+  registerGrowthTools,
+  routeRefusal,
+  type AccessCheck,
+  type AccessGuard,
+  type GrowthToolsHost,
+} from "@partnersinbiz/pib-plugin-kit";
 import {
   definePlugin,
   runWorker,
@@ -81,6 +97,8 @@ import { publishDueJob } from "./publish.js";
 import { planSweep } from "./plan-trigger.js";
 import { PLAN_ROUTINE_KEY, PLUGIN_ID } from "./platforms.js";
 import { saveRoutineReport } from "./routine-state.js";
+import { ownClientsFor, ownsScope } from "./own-clients.js";
+import { limitToOwnClients } from "./own-scope.js";
 import { pollRssJob } from "./rss.js";
 import {
   accountAnalyticsRecord,
@@ -182,16 +200,18 @@ async function responsibleUser(ctx: PluginContext, companyId: string, agentId: s
   }
 }
 
-async function actionViewer(ctx: PluginContext, context: PluginPerformActionContext): Promise<Viewer> {
+/** `check`: the guard's answer; a limited person's viewer carries his clients (stage B2, `own-clients.ts`). */
+async function actionViewer(ctx: PluginContext, context: PluginPerformActionContext, check?: AccessCheck): Promise<Viewer> {
   const companyId = context.companyId ?? context.actor.companyId;
   if (!companyId) throw new SocialError("Company is required");
   const isAgent = context.actor.type === "agent";
   const userId = context.actor.type === "user" ? context.actor.userId : await responsibleUser(ctx, companyId, context.actor.agentId, context.actor.runId);
   await bootstrap?.ensure(companyId);
-  return { companyId, userId, agentId: context.actor.agentId, runId: context.actor.runId, isAgent };
+  const own = await ownClientsFor(ctx, companyId, ownCompaniesOf(check));
+  return { companyId, userId, agentId: context.actor.agentId, runId: context.actor.runId, isAgent, own };
 }
 
-async function toolViewer(ctx: PluginContext, run: ToolRunContext): Promise<Viewer> {
+async function toolViewer(ctx: PluginContext, run: ToolRunContext, check?: AccessCheck): Promise<Viewer> {
   await bootstrap?.ensure(run.companyId);
   return {
     companyId: run.companyId,
@@ -199,6 +219,7 @@ async function toolViewer(ctx: PluginContext, run: ToolRunContext): Promise<View
     agentId: run.agentId,
     runId: run.runId,
     isAgent: true,
+    own: await ownClientsFor(ctx, run.companyId, ownCompaniesOf(check)),
   };
 }
 
@@ -354,12 +375,20 @@ function toolContent(name: string, data: unknown): string {
   return json.length > 24_000 ? `${json.slice(0, 24_000)}\n… (truncated; narrow the request)` : json;
 }
 
-async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
+async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext, check?: AccessCheck): Promise<ToolResult> {
   try {
     // Switched off in Setup: agents (and their routine runs) get a clear refusal.
     if (!(await socialOn(ctx, run.companyId))) return { error: MODULE_OFF_MESSAGE };
-    const viewer = await toolViewer(ctx, run);
-    const data = await dispatchTool(ctx, viewer, name, objectParams(params));
+    const viewer = await toolViewer(ctx, run, check);
+    let p = objectParams(params);
+    let after: ((result: unknown) => unknown) | undefined;
+    if (viewer.own) {
+      const limited = await limitToOwnClients(ctx, viewer.companyId, viewer.own, `tool:${name}`, p);
+      if ("refused" in limited) return { error: `Access refused: ${limited.refused}.` };
+      ({ params: p, after } = limited);
+    }
+    const result = await dispatchTool(ctx, viewer, name, p);
+    const data = after ? after(result) : result;
     return { content: toolContent(name, data), data };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Social tool failed" };
@@ -564,8 +593,15 @@ const ACTIONS: Record<string, ActionHandler> = {
 const API_ROUTE_KEYS = ["oauth-complete", "client-summary", SETUP_STATUS_ROUTE.routeKey, COCKPIT_ROUTE.routeKey] as const;
 const NOT_FOUND: PluginApiResponse = { status: 404, body: { error: "Not found" } };
 
-async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput): Promise<PluginApiResponse> {
-  if (input.routeKey === "client-summary") return handleClientSummary(ctx, input);
+async function handleApiRoute(ctx: PluginContext, input: PluginApiRequestInput, check?: AccessCheck): Promise<PluginApiResponse> {
+  if (input.routeKey === "client-summary") {
+    // A limited person (stage B2) gets the tile of his own clients only; a guessed id answers the same.
+    const own = input.companyId ? await ownClientsFor(ctx, input.companyId, ownCompaniesOf(check)) : null;
+    const q = (key: string) => (typeof input.query?.[key] === "string" ? String(input.query[key]).trim() : "");
+    const scope = parseClientParam(`${q("kind")}:${q("id")}`);
+    if (own && !ownsScope(own, scope ?? undefined)) return routeRefusal(NOT_AMONG_YOUR_COMPANIES);
+    return handleClientSummary(ctx, input);
+  }
   if (input.routeKey === COCKPIT_ROUTE.routeKey) {
     const companyId = input.companyId;
     if (!companyId) return { status: 400, body: { error: "companyId is required" } };
@@ -681,23 +717,36 @@ const plugin = definePlugin({
     const ensure = (companyId: string) => bootstrap!.ensure(companyId);
 
     // Every action, tool and API route goes through the access guard (PAR-12677). With the switch off it is a pass-through.
-    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    // A limited person's own companies come from the CRM copy (stage B2): the ones he owns or manages.
+    const g = createAccessGuard(ctx, {
+      pluginKey: PLUGIN_ID,
+      table: ACCESS_TABLE,
+      linkedCompanies: (companyId, userId) => listManagedCrmCompanyIds(ctx, ctx.db.namespace, companyId, userId),
+    });
     guard = g;
     for (const tool of SOCIAL_TOOLS) {
       if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
-      g.tool(tool.name, tool, async (params, run) => normalizeToolResult(await runTool(ctx, tool.name, params, run)));
+      g.tool(tool.name, tool, async (params, run, check) => normalizeToolResult(await runTool(ctx, tool.name, params, run, check)));
     }
     registerGrowthTools(ctx, socialGrowthToolsHost(ctx), g);
     for (const [key, raw] of Object.entries(ACTIONS)) {
       const handler = REFUSABLE_ACTIONS.has(key) ? refusalAsResult(raw) : raw;
-      g.action(key, async (params, context) => handler(ctx, await actionViewer(ctx, context), objectParams(params)));
+      g.action(key, async (params, context, check) => {
+        const viewer = await actionViewer(ctx, context, check);
+        if (!viewer.own) return handler(ctx, viewer, objectParams(params));
+        // A limited person (stage B2): the rule for this key keeps him to his clients (`own-scope.ts`).
+        const limited = await limitToOwnClients(ctx, viewer.companyId, viewer.own, key, objectParams(params));
+        if ("refused" in limited) return permissionRefusal(limited.refused);
+        const result = await handler(ctx, viewer, limited.params);
+        return limited.after ? limited.after(result) : result;
+      });
     }
     // Planning Canvas post cards (PAR-14389 B3a): registered through the access guard's action; the helper repeats core's person rules.
     registerCanvasCards({ register: g.action, kinds: [createPostCardKind(ctx)] });
     // Company preferences: the kit checks the caller is an owner or admin of the company (agents are refused).
     g.action("social.preferences-load", async (_params, context) => loadPreferencesAction(ctx, context));
     g.action("social.preferences-save", async (params, context) => savePreferencesAction(ctx, context, objectParams(params)));
-    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input) => handleApiRoute(ctx, input));
+    for (const routeKey of API_ROUTE_KEYS) g.apiRoute(routeKey, (input, check) => handleApiRoute(ctx, input, check));
 
     registerJob(ctx, "publish-due", () => publishDueJob(ctx, ensure));
     registerJob(ctx, "refresh-tokens", async () => {
@@ -739,7 +788,8 @@ const plugin = definePlugin({
     registerDoneChecks(ctx, SOCIAL_DONE_CHECKS);
     // The one company.created wiring (kit): remembers the company, syncs the skills, checks the weekly routine's stored template.
     registerCompanyBootstrap(ctx, { ensureResources: (companyId) => bootstrap!.ensure(companyId, { waitForSkills: true }) });
-    registerCrmProjection(ctx, ctx.db.namespace);
+    // `managers` (stage B2): who manages each company, so a limited person's own companies can be read here.
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyManagers: true });
     // The CRM's client-to-project links: a client's Social issues open in the client's own project (Q1a-12).
     registerClientProjectWatch(ctx);
     // Studio's hand-off: an approved Studio asset is imported into the client's media library.

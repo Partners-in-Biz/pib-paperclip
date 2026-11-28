@@ -10,7 +10,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { ASK_OWNER_TOOL, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
+import { ASK_OWNER_TOOL, NOT_AMONG_YOUR_COMPANIES, reviewerAgentId, withClientParam } from "@partnersinbiz/pib-plugin-kit";
 import { AccountUnavailable, moveAccountScope, publicAccount, refreshAccountToken } from "./accounts.js";
 import { agentSummary } from "./agent.js";
 import { approvalView, approvePostByDelegate, changeNotesFor, requestChangesByPerson, handBackFromDelegate, approvePostByPerson, returnPostByDelegate, completeApproval, tryAutoApprove, recordClientApprovalByPerson, recordReviewerVerdict, recordSignoff, routeWaitingPost, signoffState, supersedePendingLinks } from "./approval-flow.js";
@@ -130,6 +130,7 @@ import {
   type SocialPlatform,
 } from "./platforms.js";
 import { spaceOf } from "./space.js";
+import { ownsRow, ownsScope, type OwnClients } from "./own-clients.js";
 import { closeManualPostIssue } from "./issues.js";
 import { buildPublishRequest, retryPost } from "./publish.js";
 import { requestCreative } from "./creative.js";
@@ -151,6 +152,11 @@ export interface Viewer {
   agentId: string | null;
   runId: string | null;
   isAgent: boolean;
+  /**
+   * Set only for a person limited to his own companies under `enforce` (stage B2, `own-clients.ts`): every record
+   * this viewer sees or changes belongs to one of these clients. Unset is no limit (the switch off, owners, jobs).
+   */
+  own?: OwnClients | null;
 }
 
 // ── params ──────────────────────────────────────────────────────────────────
@@ -289,12 +295,14 @@ export function normalizeOverrides(value: unknown): Record<string, unknown> | un
 
 export function accountVisible(viewer: Viewer, account: AccountRow): boolean {
   if (account.company_id !== viewer.companyId) return false;
+  if (viewer.own && !ownsRow(viewer.own, account)) return false;
   if (account.scope === "org") return true;
   return account.owner_user_id === viewer.userId;
 }
 
 export function postVisible(viewer: Viewer, post: PostRow): boolean {
   if (post.company_id !== viewer.companyId) return false;
+  if (viewer.own && !ownsRow(viewer.own, post)) return false;
   if (post.scope === "org") return true;
   // Personal: visible to owner, or to agents who created it
   if (viewer.isAgent) return post.created_by_agent_id === viewer.agentId;
@@ -311,6 +319,11 @@ export async function requireAccount(ctx: PluginContext, viewer: Viewer, id: str
   const account = await getAccount(ctx, viewer.companyId, id);
   if (!account || !accountVisible(viewer, account)) throw new SocialError("Account is not visible");
   return account;
+}
+
+/** A limited viewer (stage B2) works only in one of his clients: own work and other clients are refused. */
+export function assertOwnTarget(viewer: Viewer, scope: ClientScope): void {
+  if (viewer.own && !ownsScope(viewer.own, scope)) throw new SocialError(NOT_AMONG_YOUR_COMPANIES);
 }
 
 export function requireUser(viewer: Viewer, what: string): string {
@@ -463,6 +476,7 @@ export async function createPostRecord(ctx: PluginContext, viewer: Viewer, input
   const handoff = handoffKey ? await requireHandoff(ctx, viewer.companyId, handoffKey) : null;
   // Omitting the client means own work (or the page's scope for a hand-off draft).
   const target = await scopeFromParams(ctx, viewer.companyId, params, handoff?.scope ?? null);
+  assertOwnTarget(viewer, target.scope);
   if (handoff && !sameClient(target.scope, handoff.scope)) {
     throw new SocialError(
       `The page "${handoff.title}" belongs to ${handoff.scope ? formatClientParam(handoff.scope) : "own work"}; its drafts stay in that scope. ${handoff.scope ? `Pass client: "${formatClientParam(handoff.scope)}"` : "Leave the client out"} (or leave it out with handoffKey).`,
@@ -539,6 +553,7 @@ export async function updatePostRecord(ctx: PluginContext, viewer: Viewer, input
   const requested = scopeInput(params);
   const target: ResolvedScope = requested === undefined || sameClient(requested, current.scope) ? current : await resolveScope(ctx, viewer.companyId, requested);
   const moving = !sameClient(target.scope, current.scope);
+  assertOwnTarget(viewer, target.scope);
   // Q10: the delegate of the post's scope, or of the scope it moves to, does not change another's post.
   await assertDelegateNotEditing(ctx, viewer, post, [postDelegateScope(post), ...(moving ? [target.scope] : [])]);
   const body = params.body === undefined ? undefined : requiredString(params, "body");
@@ -602,7 +617,9 @@ export async function getPostDetail(ctx: PluginContext, viewer: Viewer, postId: 
 
 /** The scope a read names (own work when left out). Unknown clients are refused. */
 export async function readScope(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>): Promise<ResolvedScope> {
-  return scopeFromParams(ctx, viewer.companyId, params);
+  const target = await scopeFromParams(ctx, viewer.companyId, params);
+  assertOwnTarget(viewer, target.scope);
+  return target;
 }
 
 async function accountsFor(ctx: PluginContext, companyId: string, inScopeAccounts: AccountRow[], destinations: DestinationRow[]): Promise<Map<string, AccountRow>> {
@@ -1389,6 +1406,7 @@ export async function recordInboxRecord(ctx: PluginContext, viewer: Viewer, para
     throw new SocialError(`${account.display_name} belongs to ${scopeLabel(account)}; record the item without a client or with that client.`);
   }
   const target = account ? rowScope(account) : await resolveScope(ctx, viewer.companyId, requested ?? null);
+  assertOwnTarget(viewer, target.scope);
   const item = createInboxItem({
     companyId: viewer.companyId,
     kind: requiredString(params, "kind"),
@@ -1410,7 +1428,8 @@ export async function recordInboxRecord(ctx: PluginContext, viewer: Viewer, para
   return { ...item, ...scopeOut(scopeColumns(target)) };
 }
 
-function inboxVisible(viewer: Viewer, item: { scope: "org" | "personal"; owner_user_id: string | null }): boolean {
+function inboxVisible(viewer: Viewer, item: { scope: "org" | "personal"; owner_user_id: string | null; client_kind: string | null; client_ref: string | null }): boolean {
+  if (viewer.own && !ownsRow(viewer.own, item)) return false;
   return item.scope === "org" || item.owner_user_id === viewer.userId;
 }
 
@@ -1596,6 +1615,7 @@ export async function loadSnapshot(ctx: PluginContext, viewer: Viewer, params: R
   const space = spaceOf(params);
   const me = space === "me" ? requireUser(viewer, "open My Social") : null;
   const target = await scopeFromParams(ctx, viewer.companyId, me ? { ...params, client: null } : params);
+  assertOwnTarget(viewer, target.scope);
   const scope: ClientScope = target.scope;
   const [config, accounts, posts, destinations, templates, media, feeds, inbox, agent, pickers, experiments, stats, policy] = await Promise.all([
     loadSocialConfig(ctx, viewer.companyId),

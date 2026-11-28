@@ -5,10 +5,11 @@
  * company's or not-visible post is left out, which the helper answers as `{ hidden: true }`.
  */
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { type CanvasCardInput, type CanvasCardKind, formatClientParam } from "@partnersinbiz/pib-plugin-kit";
+import { type AccessCheck, type CanvasCardInput, type CanvasCardKind, formatClientParam, ownCompaniesOf } from "@partnersinbiz/pib-plugin-kit";
 import { listPosts, type PostRow } from "./db.js";
 import { SocialError } from "./domain.js";
 import { resolveScope, scopeOfRow } from "./clients.js";
+import { ownClientsFor } from "./own-clients.js";
 import { postVisible, requirePost, type Viewer } from "./service.js";
 import { POST_CARD_SLOT } from "./slots.js";
 
@@ -50,17 +51,24 @@ export function postCard(row: PostRow): CanvasCardInput {
   };
 }
 
-/** The viewer's call user: the person the call is for (`onBehalfOfUserId` when an agent acts for them). */
-function callViewer(companyId: string, call: { context: { actor: { userId?: string | null; onBehalfOfUserId?: string | null } } }): Viewer {
+/**
+ * The viewer's call user: the person the call is for (`onBehalfOfUserId` when an agent acts for them). A person limited
+ * to his own companies (stage B2) sees the cards of his clients only: `postVisible` reads the viewer's clients.
+ */
+async function callViewer(
+  ctx: PluginContext,
+  companyId: string,
+  call: { context: { actor: { userId?: string | null; onBehalfOfUserId?: string | null } }; check?: AccessCheck },
+): Promise<Viewer> {
   const actor = call.context.actor;
-  return viewerOf(companyId, actor.onBehalfOfUserId ?? actor.userId ?? null);
+  return { ...viewerOf(companyId, actor.onBehalfOfUserId ?? actor.userId ?? null), own: await ownClientsFor(ctx, companyId, ownCompaniesOf(call.check)) };
 }
 
 export function createPostCardKind(ctx: PluginContext): CanvasCardKind {
   return {
     type: POST_CARD_SLOT,
     async resolve(ids, call) {
-      const viewer = callViewer(call.companyId, call);
+      const viewer = await callViewer(ctx, call.companyId, call);
       const cards: CanvasCardInput[] = [];
       for (const id of ids) {
         try {
@@ -72,13 +80,13 @@ export function createPostCardKind(ctx: PluginContext): CanvasCardKind {
       return cards;
     },
     async search({ q, limit }, call) {
-      const viewer = callViewer(call.companyId, call);
+      const viewer = await callViewer(ctx, call.companyId, call);
       const rows = await listPosts(ctx, call.companyId, { q, limit });
       return rows.filter((row) => postVisible(viewer, row)).map(postCard);
     },
     async related({ of, limit }, call) {
       if (of.plugin !== CRM_PLUGIN || (of.type !== "card-company" && of.type !== "card-contact")) return [];
-      const viewer = callViewer(call.companyId, call);
+      const viewer = await callViewer(ctx, call.companyId, call);
       let scope;
       try {
         scope = (await resolveScope(ctx, call.companyId, { kind: of.type === "card-company" ? "company" : "contact", id: of.id })).scope;
