@@ -33,6 +33,28 @@ describe("resolveExecutionRunAdapterConfig", () => {
       expect((resolveAdapterConfigForRuntime.mock.calls[0]?.[1] as {env:object}).env).not.toHaveProperty(key);
     }
   });
+  it.each(["on", "off"])("stored server-secret names never reach a run (kill switch %s)", async mode => {
+    // PAR-15260 (G1b): old stored configs are covered at run time, from every source.
+    vi.stubEnv("PAPERCLIP_AGENT_ENV_ALLOWLIST", mode === "off" ? "off" : "");
+    try {
+      const secretNames = { DATABASE_URL: "postgres://x", PAPERCLIP_AGENT_JWT_SECRET: "x", PAPERCLIP_QA_USER_PASSWORD: "x" };
+      const resolveAdapterConfigForRuntime = vi.fn(async (_companyId, config) => ({ config, secretKeys: new Set(), manifest: [] }));
+      const result = await resolveExecutionRunAdapterConfig({ companyId: "company-1", adapterType: "hermes_local",
+        executionRunConfig: { env: { ...secretNames, CUSTOM_VALUE: "allowed" } },
+        environmentEnv: { PAPERCLIP_SECRETS_MASTER_KEY_FILE: "/x" }, projectEnv: { PAPERCLIP_QA_USER: "qa" },
+        routineEnv: { BETTER_AUTH_SECRET: "x" }, secretsSvc: { resolveAdapterConfigForRuntime,
+          resolveEnvBindings: vi.fn(async (_companyId, env) => ({ env, secretKeys: new Set(), manifest: [] })) } as any });
+      const env = result.resolvedConfig.env as Record<string, unknown>;
+      expect(env.CUSTOM_VALUE).toBe("allowed");
+      const names = [...Object.keys(secretNames), "PAPERCLIP_SECRETS_MASTER_KEY_FILE", "PAPERCLIP_QA_USER", "BETTER_AUTH_SECRET"];
+      for (const key of names) {
+        if (mode === "off") expect(env).toHaveProperty(key);
+        else expect(env).not.toHaveProperty(key);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it.each(["many variables", "large value"])("keeps legacy adapter configuration compatible with %s", async kind => {
     const env = kind === "many variables"
       ? Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`CUSTOM_${index}`, "value"]))
