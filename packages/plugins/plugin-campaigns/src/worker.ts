@@ -3,7 +3,11 @@ import {
   agentMaySetMode,
   CAMPAIGN_MODE_LABELS,
   createAccessGuard,
+  listManagedCrmCompanyIds,
   normalizeToolResult,
+  ownCompaniesOf,
+  permissionRefusal,
+  routeRefusal,
   parseCampaignMode,
   registerCanvasCards,
   type AccessGuard,
@@ -112,6 +116,7 @@ import { CAMPAIGN_TOOLS } from "./tools.js";
 import { seedCanaryResultsFixture } from "./canary-fixture.js";
 import { createFeedDigest } from "./feed-digest.js";
 import { CAMPAIGNS_ACCESS_TABLE } from "./access-table.js";
+import { limitToOwnClients } from "./own-scope.js";
 import { SKILLS } from "./skills.js";
 import { firstName, nextSend } from "./detail.js";
 import { channelsUsed, firstChannel, launchAudience } from "./audience.js";
@@ -201,9 +206,25 @@ const plugin = definePlugin({
     pluginCtx = ctx;
     skillSync = createSkillSyncer(ctx, SKILLS);
     // Every action, tool and API route goes through the access guard (PAR-12578 plan 4.4; rows in access-table.ts).
-    const g = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: CAMPAIGNS_ACCESS_TABLE });
+    // A limited person's own companies come from the CRM copy (stage B2): the ones he owns or manages.
+    const g = createAccessGuard(ctx, {
+      pluginKey: PLUGIN_ID,
+      table: CAMPAIGNS_ACCESS_TABLE,
+      linkedCompanies: (companyId, userId) => listManagedCrmCompanyIds(ctx, ctx.db.namespace, companyId, userId),
+    });
     guard = g;
-    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true });
+    // A limited person's page call is checked against his companies first (own-scope.ts); everyone else's runs as before.
+    const act = (key: string, handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>) =>
+      g.action(key, async (params, context, check) => {
+        const own = ownCompaniesOf(check);
+        if (!own) return handler(params, context);
+        const limited = await limitToOwnClients(ctx, requiredCompany(context), own, key, params);
+        if ("refused" in limited) return permissionRefusal(limited.refused);
+        const result = await handler(limited.params, context);
+        return limited.after ? limited.after(result) : result;
+      });
+    // `managers` (stage B2): who manages each company, so a limited person's own companies can be read here.
+    registerCrmProjection(ctx, ctx.db.namespace, { companies: true, contacts: true, companyManagers: true });
     registerModuleWatch(ctx);
     registerRoleWatch(ctx);
     // A client's issues open in the client's own project (the CRM's link), else the managed Campaigns project.
@@ -222,14 +243,14 @@ const plugin = definePlugin({
     });
     for (const tool of CAMPAIGN_TOOLS) {
       if ((GROWTH_TOOL_NAMES as readonly string[]).includes(tool.name)) continue;
-      g.tool(tool.name, tool, async (params, run) => {
+      g.tool(tool.name, tool, async (params, run, check) => {
         // A tool call never waits long for the skill sync (kit `soon`).
         await skillSync?.soon(run.companyId);
-        return runTool(ctx, tool.name, params, run).then(normalizeToolResult);
+        return runTool(ctx, tool.name, params, run, ownCompaniesOf(check)).then(normalizeToolResult);
       });
     }
     registerGrowthTools(ctx, campaignsGrowthToolsHost(ctx), g);
-    g.action("campaigns.load", async (params, context) => {
+    act("campaigns.load", async (params, context) => {
       // The page never waits long for the skill sync (kit `soon`).
       if (context.companyId) await skillSync?.soon(context.companyId);
       // The page reports /_plugins/<installation uuid>/ui/ so Setup can link the settings page.
@@ -237,7 +258,7 @@ const plugin = definePlugin({
       if (context.companyId) await rememberCompany(ctx, context.companyId);
       return load(ctx, context, params);
     });
-    g.action("campaigns.client-summary", async (_params, context) => ({ clients: await ownClientCounts(ctx, requiredCompany(context)) }));
+    act("campaigns.client-summary", async (_params, context) => ({ clients: await ownClientCounts(ctx, requiredCompany(context)) }));
     g.action("campaigns.preferences-load", (_params, context) => preferencesLoad(ctx, requiredCompany(context)));
     g.action("campaigns.preferences-save", async (params, context) => {
       const result = await preferencesSave(ctx, context, (params.patch ?? {}) as Record<string, PreferenceValue | null>);
@@ -248,33 +269,33 @@ const plugin = definePlugin({
     g.action("campaigns.growth-approve-experiment", (params, context) => growthApproveExperiment(ctx, context, params));
     g.action("campaigns.growth-reject-experiment", (params, context) => growthRejectExperiment(ctx, context, params));
     g.action("campaigns.growth-decide-change", (params, context) => growthDecideChange(ctx, context, params));
-    g.action("campaigns.approve", (params, context) => approveAction(ctx, context, params, APPROVAL_PATHS));
-    g.action("campaigns.send-back", (params, context) => sendBackAction(ctx, context, params, APPROVAL_PATHS));
-    g.action("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params, actionActor(context)));
+    act("campaigns.approve", (params, context) => approveAction(ctx, context, params, APPROVAL_PATHS));
+    act("campaigns.send-back", (params, context) => sendBackAction(ctx, context, params, APPROVAL_PATHS));
+    act("campaigns.request-approval", (params, context) => requestApproval(ctx, requiredCompany(context), params, actionActor(context)));
     g.action("campaigns.sync-skills", async (_params, context) => ({ results: await skillSync?.force(requiredCompany(context)) }));
-    g.action("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
-    g.action("campaigns.add-step", (params, context) => addStepAction(ctx, context, params));
-    g.action("campaigns.launch", (params, context) => launchAction(ctx, context, params));
-    g.action("campaigns.pause", (params, context) => pauseAction(ctx, context, params));
-    g.action("campaigns.resume", (params, context) => resumeAction(ctx, context, params));
-    g.action("campaigns.complete", (params, context) => completeAction(ctx, context, params));
-    g.action("campaigns.set-mode", (params, context) => setMode(ctx, requiredCompany(context), params, actionActor(context)));
-    g.action("campaigns.stats", (params, context) => statsAction(ctx, context, params));
-    g.action("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
+    act("campaigns.create-campaign", (params, context) => createCampaignAction(ctx, context, params));
+    act("campaigns.add-step", (params, context) => addStepAction(ctx, context, params));
+    act("campaigns.launch", (params, context) => launchAction(ctx, context, params));
+    act("campaigns.pause", (params, context) => pauseAction(ctx, context, params));
+    act("campaigns.resume", (params, context) => resumeAction(ctx, context, params));
+    act("campaigns.complete", (params, context) => completeAction(ctx, context, params));
+    act("campaigns.set-mode", (params, context) => setMode(ctx, requiredCompany(context), params, actionActor(context)));
+    act("campaigns.stats", (params, context) => statsAction(ctx, context, params));
+    act("campaigns.enroll", (params, context) => enrollAction(ctx, context, params));
     g.action("campaigns.move", (params, context) => moveCampaignAction(ctx, context, params));
     g.action("campaigns.set-own-brand", (params, context) => setOwnBrandAction(ctx, context, params));
-    g.action("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
-    g.action("campaigns.results", (params, context) => campaignResultsView(ctx, requiredCompany(context), params, actionActor(context)));
+    act("campaigns.detail", (params, context) => campaignDetail(ctx, requiredCompany(context), params));
+    act("campaigns.results", (params, context) => campaignResultsView(ctx, requiredCompany(context), params, actionActor(context)));
     // Planning Canvas entity cards (PAR-14423): registered through the kit helper with the guard's `action`.
     registerCanvasCards({ register: g.action, kinds: [campaignCardKind(ctx)] });
-    g.action("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params, actionActor(context)));
-    g.action("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params, actionActor(context)));
+    act("campaigns.ab-suggestion", (params, context) => suggestWinner(ctx, requiredCompany(context), params, actionActor(context)));
+    act("campaigns.declare-winner", (params, context) => declareWinner(ctx, requiredCompany(context), params, actionActor(context)));
     // Adding people (Stage 4c): preview, import, add one, tick own contacts, a client list with its reach. Never a send.
-    g.action("campaigns.audience-preview", (params, context) => audienceAction(ctx, context, params, "preview"));
-    g.action("campaigns.audience-import", (params, context) => audienceAction(ctx, context, params, "import"));
-    g.action("campaigns.audience-add", (params, context) => audienceAction(ctx, context, params, "add"));
+    act("campaigns.audience-preview", (params, context) => audienceAction(ctx, context, params, "preview"));
+    act("campaigns.audience-import", (params, context) => audienceAction(ctx, context, params, "import"));
+    act("campaigns.audience-add", (params, context) => audienceAction(ctx, context, params, "add"));
     g.action("campaigns.audience-tick", (params, context) => audienceAction(ctx, context, params, "tick"));
-    g.action("campaigns.audience-members", (params, context) => audienceAction(ctx, context, params, "members"));
+    act("campaigns.audience-members", (params, context) => audienceAction(ctx, context, params, "members"));
     ctx.jobs.register("open-due-steps", () => trackJob(ctx, "open-due-steps", async () => {
       // Catch up on approvals and step issues whose events were missed (delivery is at-most-once).
       await catchUpApprovals(ctx);
@@ -344,7 +365,15 @@ const plugin = definePlugin({
     });
     g.apiRoute(SETUP_STATUS_ROUTE.routeKey, async (input) => ({ status: 200, body: await setupStatus(ctx, input.companyId) }));
     g.apiRoute(COCKPIT_ROUTE.routeKey, async (input) => ({ status: 200, body: await cockpitSnapshot(ctx, input.companyId) }));
-    g.apiRoute("client-summary", (input) => handleApiRoute(ctx, input));
+    g.apiRoute("client-summary", async (input, check) => {
+      // A limited person reads the counts of his own clients only; another company's and a guessed id get the same 403.
+      const own = ownCompaniesOf(check);
+      if (own) {
+        const limited = await limitToOwnClients(ctx, input.companyId, own, "api:client-summary", { client: `${firstQuery(input.query.kind)}:${firstQuery(input.query.id)}` });
+        if ("refused" in limited) return routeRefusal(limited.refused);
+      }
+      return handleApiRoute(ctx, input);
+    });
     ctx.logger.info("Campaigns plugin ready");
   },
   async onHealth() {
@@ -365,10 +394,16 @@ const plugin = definePlugin({
 export default plugin;
 runWorker(plugin, import.meta.url);
 
-async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext): Promise<ToolResult> {
+/** `own`: the companies a limited person's call is limited to (stage B2), null for no limit. */
+async function runTool(ctx: PluginContext, name: string, params: unknown, run: ToolRunContext, own: ReadonlySet<string> | null = null): Promise<ToolResult> {
   try {
-    const body = objectParams(params);
-    const data = await dispatch(ctx, name, body, run);
+    let body = objectParams(params);
+    if (!own) return { content: name, data: await dispatch(ctx, name, body, run) };
+    const limited = await limitToOwnClients(ctx, run.companyId, own, `tool:${name}`, body);
+    if ("refused" in limited) return { error: `Access refused: ${limited.refused}.` };
+    body = limited.params;
+    const result = await dispatch(ctx, name, body, run);
+    const data = limited.after ? await limited.after(result) : result;
     return { content: name, data };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Campaign tool failed" };
