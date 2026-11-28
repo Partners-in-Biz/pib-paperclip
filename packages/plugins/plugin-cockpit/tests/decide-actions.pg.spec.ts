@@ -4,10 +4,11 @@
  * and refuse every caller but the owner's session before any host call. Also the hourly hand-back of an answered ask
  * whose hand-back was lost.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { MEMORY_AGENT_TOOLS, MEMORY_TOOLS_GRANT } from "@partnersinbiz/pib-plugin-kit";
 import { onAskComment, reconcileAsks } from "../src/asks.js";
 import { LOCAL_BOARD_USER_ID } from "../src/constants.js";
+import { cardsRefreshing, clearDecideCache, type DecideQueue } from "../src/decide.js";
 import { NAMESPACE } from "../src/namespace.js";
 import { saveTeam } from "../src/roles.js";
 import { COMPANY, embeddedAvailable } from "./helpers/pg.js";
@@ -53,6 +54,15 @@ d("the Decide actions (Postgres)", () => {
   afterAll(async () => {
     await worlds?.stop();
   });
+  afterEach(async () => {
+    await settle();
+    clearDecideCache();
+  });
+
+  /** Lets a background card refresh that a queue build started run to its end. */
+  async function settle() {
+    for (let i = 0; i < 200 && cardsRefreshing(A); i += 1) await new Promise((r) => setTimeout(r, 10));
+  }
 
   /** The fake host's issue calls these tests wrap. */
   interface HostIssues {
@@ -65,6 +75,8 @@ d("the Decide actions (Postgres)", () => {
   interface Calls {
     personComments: Array<{ issueId: string; body: string; actorUserId: string }>;
     approvalsGet: string[];
+    /** `ctx.approvals.list` calls: one per queue build that is not a cache hit. */
+    approvalsList: number;
     decide: Array<{ id: string; input: Record<string, unknown> }>;
     listInteractions: string[];
     respond: Array<{ issueId: string; interactionId: string; input: Record<string, unknown> }>;
@@ -86,7 +98,7 @@ d("the Decide actions (Postgres)", () => {
       NOW,
     );
     await saveTeam(w.env, A, { operatorAgentId: OP }, OWNER);
-    const calls: Calls = { personComments: [], approvalsGet: [], decide: [], listInteractions: [], respond: [], issueGets: 0 };
+    const calls: Calls = { personComments: [], approvalsGet: [], approvalsList: 0, decide: [], listInteractions: [], respond: [], issueGets: 0 };
     const issues = w.ctx.issues as unknown as HostIssues;
     const createComment = issues.createComment;
     issues.createComment = async (issueId: string, body: string, companyId: string, opts?: { authorAgentId?: string; actorUserId?: string }) => {
@@ -121,7 +133,10 @@ d("the Decide actions (Postgres)", () => {
     };
     let decideApplied = true;
     (w.ctx as unknown as { approvals: Record<string, unknown> }).approvals = {
-      list: async () => approvals,
+      list: async () => {
+        calls.approvalsList += 1;
+        return approvals;
+      },
       get: async (id: string) => {
         calls.approvalsGet.push(id);
         const a = approvals.find((x) => x.id === id);
@@ -451,6 +466,65 @@ d("the Decide actions (Postgres)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // The queue cache
+  // -------------------------------------------------------------------------
+
+  describe("every decide clears the company's queue cache (plan: the next Refresh builds again)", () => {
+    const queue = (w: World) => w.actions.get("decide.queue")!({}, SHAPES.owner) as Promise<DecideQueue>;
+    const ids = (q: DecideQueue) => q.items.map((i) => i.ref.id);
+
+    /** Builds the queue until it is cached (the first build's card refresh clears it once), and proves a further build is a cache hit. */
+    async function warm(w: World): Promise<{ reads: number; cached: DecideQueue }> {
+      await queue(w);
+      await settle();
+      const cached = await queue(w);
+      const reads = w.calls.approvalsList;
+      expect(ids(await queue(w))).toEqual(ids(cached));
+      expect(w.calls.approvalsList).toBe(reads); // cache hit: no host read
+      return { reads, cached };
+    }
+
+    it("decide.ask: the next build reads the host and the answered ask is gone", async () => {
+      const w = await make();
+      const { askId } = await ask(w);
+      const { reads, cached } = await warm(w);
+      expect(ids(cached)).toContain(askId);
+      expect(await act(w, "decide.ask", { askId, option: "A" })).toEqual({ result: "ok" });
+      const next = await queue(w);
+      expect(w.calls.approvalsList).toBeGreaterThan(reads);
+      expect(ids(next)).not.toContain(askId);
+    });
+
+    it("decide.approval: the next build reads the host and the approved approval is gone", async () => {
+      const w = await make({ approvals: SEEDED });
+      const { reads, cached } = await warm(w);
+      expect(ids(cached)).toContain("ap-board");
+      expect(await act(w, "decide.approval", { approvalId: "ap-board", action: "approve" })).toEqual({ result: "ok" });
+      const next = await queue(w);
+      expect(w.calls.approvalsList).toBeGreaterThan(reads);
+      expect(ids(next)).not.toContain("ap-board");
+    });
+
+    it("decide.card: the next build reads the host", async () => {
+      const w = await make();
+      const i = await issue(w);
+      w.setInteractions({ [i.id]: [{ id: "c-1", kind: "request_confirmation", status: "pending", title: "Share", payload: {}, createdAt: NOW }] });
+      const { reads } = await warm(w);
+      expect(await act(w, "decide.card", { issueId: i.id, interactionId: "c-1", action: "accept" })).toEqual({ result: "ok" });
+      await queue(w);
+      expect(w.calls.approvalsList).toBeGreaterThan(reads);
+    });
+
+    it("a refused decide clears it too (the finally), so a stale item is never kept by a failed click", async () => {
+      const w = await make({ approvals: SEEDED });
+      const { reads } = await warm(w);
+      await expect(act(w, "decide.approval", { approvalId: "ap-hire", action: "approve" })).rejects.toThrow("decided on its own page");
+      await queue(w);
+      expect(w.calls.approvalsList).toBeGreaterThan(reads);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // The hourly hand-back of a lost hand-back
   // -------------------------------------------------------------------------
 
@@ -491,7 +565,8 @@ d("the Decide actions (Postgres)", () => {
       const closed = await stranded(w, 30);
       w.issues.get(closed.issueId)!.status = "done";
       const agent = await stranded(w, 30);
-      Object.assign(w.issues.get(agent.issueId)!, { assigneeAgentId: OP, assigneeUserId: null, status: "todo" });
+      // Both set: the agent check is what leaves it alone, not a missing user.
+      Object.assign(w.issues.get(agent.issueId)!, { assigneeAgentId: OP, assigneeUserId: OWNER, status: "in_review" });
       expect(await reconcileAsks(w.env, A)).toEqual({ answered: 0, closed: 0, open: 0 });
       for (const a of [fresh, old, effect, closed, agent]) {
         expect((await row(w, a.askId)).handed_back_at).toBeNull();
