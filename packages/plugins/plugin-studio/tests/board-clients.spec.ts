@@ -133,6 +133,15 @@ describe("board-client: what the board's panel shows (AC3)", () => {
     expect(await own.harness.performAction("board-client", scope(), own.as(RESTRICTED_ADMIN, true))).toEqual({ effective: null, source: null, dormant: null, missing: null, canSet: false, withheld: false });
   });
 
+  it("a restricted member on a project board with a client gets withheld (\"Client work\"), no names, no picker (PAR-15288)", async () => {
+    const { harness, as } = await studio();
+    for (const [user, label] of [[RESTRICTED, "member"], [RESTRICTED_ADMIN, "admin"]] as const) {
+      const view = await harness.performAction("board-client", scope(PROJECT_A), as(user, true));
+      expect(view, label).toEqual({ effective: null, source: "project", dormant: null, missing: null, canSet: false, withheld: true });
+      expect(JSON.stringify(view)).not.toContain("Acme");
+    }
+  });
+
   it("a link to a client deleted in the CRM comes back as missing, so the panel can offer re-pick or clear", async () => {
     const { harness, as } = await studio({ links: [linkTo(CLIENT_GONE, "Gone Ltd")] });
     expect(await harness.performAction("board-client", scope(), as(OWNER))).toMatchObject({ effective: null, source: null, missing: { ref: `company:${CLIENT_GONE}`, name: "Gone Ltd" }, canSet: true });
