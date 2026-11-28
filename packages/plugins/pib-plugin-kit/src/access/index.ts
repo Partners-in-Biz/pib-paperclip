@@ -6,3 +6,4 @@ export * from "./report.js";
 export * from "./refusal.js";
 export * from "./guard.js";
 export * from "./me.js";
+export * from "./own-clients.js";
