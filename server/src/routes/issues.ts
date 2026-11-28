@@ -19764,6 +19764,11 @@ export function issueRoutes(
         if (req.body.body.trim() !== "/new" && !(await assertBoardCommentNotPaused(req, res, issue))) return;
         const actor = getActorInfo(req);
         const userId = req.actor.userId;
+        // A spoken turn's marker (plan PAR-15073 5.1): the voice plugin posts it on the person's own chat.
+        // Only the marker is kept; chat messages stored no other metadata before and still do not.
+        const voiceMetadata = req.body.metadata?.voice
+          ? { version: 1 as const, voice: req.body.metadata.voice, sections: [] }
+          : undefined;
         const publications: ActivityPublication[] = [];
         const comment = await db.transaction(async (tx) => {
           await tx.select({ id: issueRows.id }).from(issueRows).where(and(
@@ -19775,6 +19780,7 @@ export function issueRoutes(
           ));
           const saved = await svc.addComment(issue.id, req.body.body, { userId }, {
             clientRequestId: req.body.clientRequestId, authorType: "user", attachmentIds: req.body.attachmentIds,
+            ...(voiceMetadata ? { metadata: voiceMetadata } : {}),
           }, tx);
           if (!existing) await logActivity(tx as unknown as Db, {
             companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
