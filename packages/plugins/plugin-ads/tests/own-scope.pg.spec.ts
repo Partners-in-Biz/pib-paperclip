@@ -128,6 +128,26 @@ describe.skipIf(!available)("a person limited to his own companies (enforce)", (
     expect(isRefusal(await act(w, "ads.sync", { accountId: acme.accountId }))).toBe(false);
   });
 
+  it("fails closed: when his companies or a contact's companies cannot be read, the page and the tools refuse", async () => {
+    const { query } = w.ctx.db;
+    const failOn = (part: string) => {
+      w.ctx.db.query = (async (sql: string, params?: unknown[]) => {
+        if (sql.includes(part)) throw new Error("read failed");
+        return query.call(w.ctx.db, sql, params);
+      }) as typeof w.ctx.db.query;
+    };
+    // The guard's resolver (his companies): a refusal, not "every company".
+    failOn("managers->>'ownerUserId'");
+    expect(isRefusal(await act(w, "ads.load", {}))).toBe(true);
+    expect((await tool(w, "list-ad-accounts", { client: "company:acme" })).error).toMatch(/^Access refused/);
+    // A contact's companies: an error, never the records.
+    failOn("SELECT account_ids FROM");
+    const contact = await tool(w, "list-ad-accounts", { client: "contact:jo" });
+    expect(contact.data?.accounts).toBeUndefined();
+    expect(JSON.stringify(contact)).toMatch(/read failed/);
+    w.ctx.db.query = query;
+  });
+
   it("company-wide rows stay closed to him; an owner is not limited", async () => {
     for (const key of ["ads.campaign-caps", "ads.agent", "ads.set-cap", "ads.register-account"]) expect(isRefusal(await act(w, key, {})), key).toBe(true);
     expect((await tool(w, "list-campaigns-without-cap")).error).toMatch(/^Access refused/);
