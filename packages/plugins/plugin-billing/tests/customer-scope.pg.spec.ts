@@ -21,7 +21,7 @@ const GUESSED = "b4000000-0000-4000-8000-00000000dead";
 const GRANT = [
   "billing.invoices:view", "billing.invoices:create", "billing.invoices:edit", "billing.invoices:approve",
   "billing.quotes:view", "billing.quotes:create", "billing.quotes:edit", "billing.time:view", "billing.time:create",
-  "billing.time:delete", "billing.plans:view", "billing.plans:create", "billing.plans:edit",
+  "billing.time:edit", "billing.time:delete", "billing.plans:view", "billing.plans:create", "billing.plans:edit",
 ];
 
 const as = (userId: string) => ({ companyId: COMPANY, actor: { type: "user" as const, userId, agentId: null, runId: null, companyId: COMPANY } });
@@ -94,6 +94,102 @@ describe.skipIf(!available)("Billing records scoped to a limited person's own co
     expect(((await h.call("billing.list-quotes", {}, as(LIMITED))) as Array<{ id: string }>).map((q) => q.id)).toEqual([ids.quoteMine]);
     // The owner still sees the whole book under enforce.
     expect(((await h.call("billing.load", {}, as(OWNER))) as { invoices: unknown[] }).invoices).toHaveLength(4);
+  });
+
+  /**
+   * One row of each listed kind for his company and for the other company, plus PiB's own costs and standing work.
+   * Each list must hold his row and leave out the other company's (review on PAR-15206: every filter needs a failing test).
+   */
+  async function seedEveryList() {
+    const sql = (text: string, values: unknown[]) => h.client.query(text.replaceAll("NS.", "plugin_billing_287195dc99."), values);
+    await sql(`UPDATE NS.invoices SET status = 'sent', number = 'INV-' || left(id, 6) WHERE id = ANY($1)`, [[ids.mine, ids.other]]);
+    const rows: Record<string, { mine: string; other: string }> = {};
+    const both = async (name: string, insert: (id: string, invoiceId: string, kind: string, ref: string) => Promise<unknown>) => {
+      rows[name] = { mine: `${name}-mine`, other: `${name}-other` };
+      await insert(rows[name].mine, ids.mine, "company", MINE);
+      await insert(rows[name].other, ids.other, "company", OTHER);
+    };
+    await both("cn", (id, invoiceId, kind, ref) =>
+      sql(`INSERT INTO NS.credit_notes (id, company_id, invoice_id, amount_minor, currency, customer_kind, customer_ref) VALUES ($1, $2, $3, 100, 'ZAR', $4, $5)`, [id, COMPANY, invoiceId, kind, ref]));
+    await both("pop", (id, invoiceId) => sql(`INSERT INTO NS.pops (id, company_id, source, invoice_id) VALUES ($1, $2, 'upload', $3)`, [id, COMPANY, invoiceId]));
+    await both("sub", (id, _invoiceId, kind, ref) =>
+      sql(`INSERT INTO NS.subscriptions (id, company_id, customer_kind, customer_ref, customer_name, description, price_minor, currency, next_invoice_at) VALUES ($1, $2, $3, $4, $1, 'retainer', 1000, 'ZAR', now() + interval '30 days')`, [id, COMPANY, kind, ref]));
+    await both("dec", (id, invoiceId) => {
+      // An open host issue, or the stale-approval sweep in load closes the decision.
+      h.issues.set(id, { id, companyId: COMPANY, title: "Record payment", status: "todo" });
+      return sql(`INSERT INTO NS.decision_issues (issue_id, company_id, kind, subject_kind, subject_id, payload) VALUES ($1, $2, 'payment', 'invoice', $3, $4)`, [id, COMPANY, invoiceId, JSON.stringify({ invoiceId, amountMinor: 100, currency: "ZAR", number: "INV" })]);
+    });
+    await sql(`INSERT INTO NS.expenses (id, company_id, description, amount_minor) VALUES ('exp-1', $1, 'PiB rent', 5000)`, [COMPANY]);
+    await sql(`INSERT INTO NS.bills (id, company_id, supplier_name) VALUES ('bill-1', $1, 'PiB supplier')`, [COMPANY]);
+    await sql(`INSERT INTO NS.work_issues (key, company_id, kind, issue_id) VALUES ('wi-1', $1, 'deal_won', 'issue-wi-1')`, [COMPANY]);
+    const time = async (client: string) => ((await h.call("billing.log-time", { client, description: "work", minutes: 30 }, as(OWNER))) as { id: string }).id;
+    rows.time = { mine: await time(`company:${MINE}`), other: await time(`contact:ct-other`) };
+    const recurring = async (templateInvoiceId: string) =>
+      ((await h.call("billing.create-recurring", { templateInvoiceId, frequency: "monthly", nextRunAt: "2027-01-01T00:00:00Z" }, as(OWNER))) as { id: string }).id;
+    rows.rec = { mine: await recurring(ids.mine), other: await recurring(ids.other) };
+    rows.inv = { mine: ids.mine, other: ids.other };
+    return rows;
+  }
+  const idsOf = (list: unknown) => (list as Array<{ id?: string; issueId?: string; invoiceId?: string }>).map((row) => row.id ?? row.issueId ?? row.invoiceId);
+
+  it("every list holds his row and not the other company's; PiB's own costs and standing work are empty for him", async () => {
+    const rows = await seedEveryList();
+    const only = (list: unknown, kind: string, what: string) => {
+      const got = idsOf(list);
+      expect(got, `${what}: his row`).toContain(rows[kind]!.mine);
+      expect(got, `${what}: other company's row`).not.toContain(rows[kind]!.other);
+    };
+    await mode("enforce");
+    const page = (await h.call("billing.load", {}, as(LIMITED))) as Record<string, unknown> & { retainers: { subscriptions: unknown } };
+    only(page.invoices, "inv", "load invoices");
+    only(page.creditNotes, "cn", "load creditNotes");
+    only(page.pops, "pop", "load pops");
+    only(page.time, "time", "load time");
+    only(page.recurring, "rec", "load recurring");
+    only(page.retainers.subscriptions, "sub", "load retainers.subscriptions");
+    only(page.decisions, "dec", "load decisions");
+    expect({ expenses: page.expenses, bills: page.bills, workIssues: page.workIssues }).toEqual({ expenses: [], bills: [], workIssues: [] });
+    only(await h.call("billing.open-invoices", {}, as(LIMITED)), "inv", "open-invoices");
+    only(await h.call("billing.list-credit-notes", {}, as(LIMITED)), "cn", "list-credit-notes");
+    only(await h.call("billing.pops", {}, as(LIMITED)), "pop", "pops");
+    only(((await h.call("billing.retainers", {}, as(LIMITED))) as { subscriptions: unknown }).subscriptions, "sub", "retainers");
+    only(await h.call("billing.list-time", {}, as(LIMITED)), "time", "list-time");
+    only(await h.call("billing.list-recurring", {}, as(LIMITED)), "rec", "list-recurring");
+    // The same data for the owner: every row, and the costs and standing work are there (so the empties above mean something).
+    const all = (await h.call("billing.load", {}, as(OWNER))) as Record<string, unknown[]> & { retainers: { subscriptions: unknown[] } };
+    for (const [key, kind] of [["creditNotes", "cn"], ["pops", "pop"], ["time", "time"], ["recurring", "rec"], ["decisions", "dec"]] as const) {
+      expect(idsOf(all[key]), key).toEqual(expect.arrayContaining([rows[kind]!.mine, rows[kind]!.other]));
+    }
+    expect(idsOf(all.retainers.subscriptions)).toEqual(expect.arrayContaining([rows.sub!.mine, rows.sub!.other]));
+    expect([all.expenses.length, all.bills.length, all.workIssues.length]).toEqual([1, 1, 1]);
+    expect(idsOf(await h.call("billing.open-invoices", {}, as(OWNER)))).toEqual(expect.arrayContaining([ids.mine, ids.other]));
+  });
+
+  it("each record kind resolves to its customer: credit note, POP, payment link, subscription, running timer, quote follow-up, upload purpose", async () => {
+    const rows = await seedEveryList();
+    const sql = (text: string, values: unknown[]) => h.client.query(text.replaceAll("NS.", "plugin_billing_287195dc99."), values);
+    for (const [id, invoiceId] of [["link-mine", ids.mine], ["link-other", ids.other]] as const) {
+      await sql(`INSERT INTO NS.payment_links (id, company_id, invoice_id, provider, amount_minor, currency, status) VALUES ($1, $2, $3, 'mock', 100, 'ZAR', 'cancelled')`, [id, COMPANY, invoiceId]);
+    }
+    // A running timer of the other company's client, started by him (the owner logs it in his name).
+    await sql(`INSERT INTO NS.time_entries (id, company_id, owner, description, customer_kind, customer_ref, customer_name, started_at, currency) VALUES ('timer-other', $1, $2, 'call', 'company', $3, 'Other Ltd', now(), 'ZAR')`, [COMPANY, `user:${LIMITED}`, OTHER]);
+    await mode("enforce");
+    const pairs: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
+      ["billing.credit-note-pdf", { creditNoteId: rows.cn!.other }, { creditNoteId: rows.cn!.mine }],
+      ["billing.pop-file", { popId: rows.pop!.other }, { popId: rows.pop!.mine }],
+      ["billing.cancel-payment-link", { linkId: "link-other" }, { linkId: "link-mine" }],
+      ["billing.set-subscription-status", { subscriptionId: rows.sub!.other, status: "paused" }, { subscriptionId: rows.sub!.mine, status: "paused" }],
+      ["billing.log-follow-up", { quoteId: ids.quoteOther, note: "called" }, { quoteId: ids.quoteMine, note: "called" }],
+    ];
+    for (const [key, theirs, his] of pairs) {
+      expect(refused(await h.call(key, theirs, as(LIMITED))), `${key} other`).toBe(OUTSIDE_SCOPE);
+      // His own record passes the scope check (the handler may still refuse for its own reasons, never with the scope answer).
+      expect(refused(await h.call(key, his, as(LIMITED)).catch((error: Error) => error.message)), `${key} his`).not.toBe(OUTSIDE_SCOPE);
+    }
+    expect(refused(await h.call("billing.stop-timer", {}, as(LIMITED)))).toBe(OUTSIDE_SCOPE);
+    expect(refused(await h.call("billing.stop-timer", { entryId: "timer-other" }, as(LIMITED)))).toBe(OUTSIDE_SCOPE);
+    expect(refused(await h.call("billing.upload-url", { purpose: "receipt", mime: "application/pdf", bytes: 10 }, as(LIMITED)))).toBe(OUTSIDE_SCOPE);
+    expect(refused(await h.call("billing.upload-url", { purpose: "pop", mime: "application/pdf", bytes: 10 }, as(LIMITED)).catch((error: Error) => error.message))).not.toBe(OUTSIDE_SCOPE);
   });
 
   it("time entries and recurring schedules: his lists, his records only", async () => {
