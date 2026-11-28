@@ -148,6 +148,11 @@ const CLIENT_MANAGER_RESOURCES = [
   "campaigns.campaigns", "ads.work",
   "crm.sites", "crm.esign", "crm.care", "crm.drive", "crm.desk", "crm.sequences",
 ];
+/**
+ * Keys the Client manager does not get although his resources have them (access B2-D7, option 2, PAR-15244): he
+ * proposes Ads money changes, an owner approves and runs them. Revisit when stage E routes approvals per person.
+ */
+const CLIENT_MANAGER_WITHHELD = new Set(["ads.work:approve"]);
 
 export const PRESETS: Record<PresetId, Preset> = {
   salesperson: {
@@ -184,7 +189,7 @@ export const PRESETS: Record<PresetId, Preset> = {
     id: "clientManager",
     label: "Client manager (own companies only)",
     scope: "linked",
-    permissions: keys(CLIENT_MANAGER_RESOURCES),
+    permissions: keys(CLIENT_MANAGER_RESOURCES).filter((k) => !CLIENT_MANAGER_WITHHELD.has(k)),
   },
   fullAccess: { id: "fullAccess", label: "Full access", scope: "all", permissions: [...ALL_KEYS] },
 };
