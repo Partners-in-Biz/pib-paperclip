@@ -108,6 +108,7 @@ describe("GET /health dev-server supervisor access", () => {
         deploymentExposure: "private",
         localAiLoginSupported: true,
         commit: null,
+        capabilities: { voiceCommentMetadata: 1 },
         bootstrapStatus: "ready",
         bootstrapInviteActive: false,
         devServer: {

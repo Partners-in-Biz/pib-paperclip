@@ -96,6 +96,8 @@ export interface InstanceExperimentalSettings {
   /** The artifact presentation from the artifact directions lab (MVP V1) on the Artifacts page, the panel's Artifacts tab and the task thread. */
   enableArtifactsV1: boolean;
   enableConferenceRoomChat: boolean;
+  /** Voice mode: talk directly to the agent. Stage 1 only recognises the comment field. */
+  enableVoiceRunProfile: boolean;
   enableClassicTaskInterface: boolean;
   /** Require Cmd/Ctrl+Enter to submit task replies and new tasks. */
   enableLegacyComposerSubmit: boolean;

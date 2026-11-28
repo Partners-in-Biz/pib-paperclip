@@ -68,6 +68,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableCombinedInboxTasks: z.boolean().default(false),
   enableArtifactsV1: z.boolean().default(true),
   enableConferenceRoomChat: z.boolean().default(false),
+  enableVoiceRunProfile: z.boolean().default(false),
   enableClassicTaskInterface: z.boolean().default(false),
   enableLegacyComposerSubmit: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),

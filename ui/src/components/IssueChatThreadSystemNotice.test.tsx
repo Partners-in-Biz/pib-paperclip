@@ -845,4 +845,17 @@ describe("IssueChatThread system notice routing", () => {
     expect(row).not.toBeNull();
     expect(row?.textContent).not.toContain("Paperclip needs a disposition before this issue can continue.");
   });
+
+  it("renders a voice comment as a plain comment with no metadata or notice block", () => {
+    const comment: IssueChatComment = {
+      id: "voice-comment", companyId: "company-1", issueId: "issue-1", authorType: "user", authorAgentId: null, authorUserId: "user-1",
+      body: "Spoken words", presentation: null,
+      metadata: { version: 1, voice: { mode: "direct" }, sections: [] }, ...baseTimestamps,
+    };
+    renderThread([comment]);
+    expect(container.textContent).toContain("Spoken words");
+    expect(container.querySelector('[data-testid="disposition-recovery-notice"]')).toBeNull();
+    expect(container.querySelector('[data-testid="stale-disposition-warning"]')).toBeNull();
+    expect(container.querySelector('[data-testid="issue-chat-metadata-row"]')).toBeNull();
+  });
 });

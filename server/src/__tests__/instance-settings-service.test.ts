@@ -141,6 +141,7 @@ describe("instance settings service", () => {
       enablePaperclipNotebook: false,
       enableGoogleWorkspaceConnector: false,
       enableConferenceRoomChat: false,
+      enableVoiceRunProfile: false,
       enableClassicTaskInterface: false,
       enableLegacyComposerSubmit: false,
       enableExternalObjects: false,
@@ -297,6 +298,13 @@ describe("instance settings service", () => {
 
     const disabled = normalizeExperimentalSettings({ ...enabled, enableConferenceRoomChat: false });
     expect(disabled).toEqual(current);
+  });
+
+  it("defaults enableVoiceRunProfile off and keeps it across a save and read", () => {
+    expect(normalizeExperimentalSettings(undefined).enableVoiceRunProfile).toBe(false);
+    const on = normalizeExperimentalSettings({ enableVoiceRunProfile: true });
+    expect(on.enableVoiceRunProfile).toBe(true);
+    expect(normalizeExperimentalSettings({ ...on }).enableVoiceRunProfile).toBe(true);
   });
 
   it("rejects non-boolean enableConferenceRoomChat values back to the default", () => {

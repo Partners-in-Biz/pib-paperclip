@@ -1246,6 +1246,8 @@ export interface IssueCommentMetadata {
     reason: string;
     assigneeAgentId: string | null;
   };
+  /** Voice comment marker (stage 1: recognised and stored only). May come with empty `sections`. */
+  voice?: { mode: "direct" };
   sections: IssueCommentMetadataSection[];
 }
 

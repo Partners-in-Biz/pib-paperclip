@@ -141,3 +141,11 @@ describe("buildSystemNoticeProps", () => {
     expect(props.detailsDefaultOpen).toBe(true);
   });
 });
+
+describe("voice comment metadata", () => {
+  it("renders no extra block for a voice comment with empty sections", () => {
+    const metadata = { version: 1 as const, voice: { mode: "direct" as const }, sections: [] };
+    expect(mapCommentMetadataToSystemNoticeSections(metadata)).toEqual([]);
+    expect(buildSystemNoticeProps({ presentation: null, metadata, body: "hi" }).metadata).toBeUndefined();
+  });
+});

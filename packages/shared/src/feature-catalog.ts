@@ -228,6 +228,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableVoiceRunProfile: {
+    title: "Voice mode",
+    description:
+      "Talk directly to an agent by voice. Instance gate for the voice run profile; each company also turns it on in its own settings.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableClassicTaskInterface: {
     title: "Classic Task Interface",
     description:

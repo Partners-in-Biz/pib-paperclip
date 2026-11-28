@@ -47,6 +47,13 @@ describe("INSTANCE_FEATURE_CATALOG", () => {
     }
   });
 
+  it("lists enableVoiceRunProfile, default off", () => {
+    expect(INSTANCE_FEATURE_KEYS).toContain("enableVoiceRunProfile");
+    expect(INSTANCE_FEATURE_CATALOG.enableVoiceRunProfile.selfHostedDefault).toBe(false);
+    expect(instanceExperimentalSettingsSchema.parse({}).enableVoiceRunProfile).toBe(false);
+    expect(instanceExperimentalSettingsSchema.parse({ enableVoiceRunProfile: true }).enableVoiceRunProfile).toBe(true);
+  });
+
   it("has a non-empty title, description, and valid tier for every flag", () => {
     for (const key of INSTANCE_FEATURE_KEYS) {
       const entry = INSTANCE_FEATURE_CATALOG[key];
