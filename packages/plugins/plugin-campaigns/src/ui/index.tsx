@@ -590,7 +590,8 @@ function CampaignsPageBody({ context }: PluginPageProps) {
                   ? `${clientName} is one of our own brands. Its campaigns go out as ${clientName}, keep their own do-not-email list, and are approved like our own campaigns.`
                   : `${clientName} is a client: its campaigns need the client's written yes and your approval.`}
               </span>
-              <Button
+              {/* Closed to a limited person (own brands are company-wide): the worker refuses it, so the page leaves it out. */}
+              {limitedTo ? null : <Button
                 type="button"
                 variant="secondary"
                 style={{ height: 28, fontSize: 12.5 }}
@@ -605,7 +606,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
                 }}
               >
                 {snapshot.ownBrand ? "Not one of ours" : "Mark as one of our own brands"}
-              </Button>
+              </Button>}
             </p>
           ) : null}
           <NeedsAttention campaigns={everything} brandOf={(id) => brandGroups.find((group) => group.campaigns.some((campaign) => campaign.id === id))?.client.name ?? null} onOpen={openCampaign} />
