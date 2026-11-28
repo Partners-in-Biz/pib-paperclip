@@ -821,7 +821,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
             client={{ kind: scope.kind, id: scope.id, name: barName, detail: client?.detail ?? null }}
             active="campaigns"
             linkProps={navigation.linkProps}
-            ownPath="/campaigns"
+            ownPath={limitedTo ? null : "/campaigns"}
             actions={headerAction}
           />
         )}

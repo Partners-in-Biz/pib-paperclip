@@ -129,7 +129,7 @@ Migrations 001–019 are applied on installed instances; 0.23.0 adds `020_seo.sq
 
 ## 0.54.0: the client picker for a limited person (stage B2-5, PAR-15212)
 
-- src-only (UI kit 0.6.0). A limited person's page follows the client the load opened (`?client=` is set to his first company when the address names none), and a picker under the client header lists his companies (`limitedTo`); a pick opens that company's workspace. Without `limitedTo` (switch off, or a person who is not limited) the page is as before. No migration, no capability change.
+- src-only (UI kit 0.6.0). A limited person's page follows the client the load opened (`?client=` is set to his first company when the address names none), and a picker under the client header lists his companies (`limitedTo`); a pick opens that company's workspace. The "Our own ..." back link is left out for him (the company-wide page refuses him). Without `limitedTo` (switch off, or a person who is not limited) the page is as before. No migration, no capability change.
 
 ## 0.53.0: a limited person works only on his own companies' sprints (stage B2-4, PAR-15211)
 

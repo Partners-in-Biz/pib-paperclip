@@ -7,7 +7,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LimitedClientPicker, readLimitedTo } from "../src/index.js";
+import { ClientWorkspaceBar, LimitedClientPicker, readLimitedTo } from "../src/index.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -81,5 +81,15 @@ describe("LimitedClientPicker", () => {
     const limitedTo = { client: "company:acme", clients: [{ client: "company:acme", name: "Acme Ltd" }, { client: "company:beta", name: "Beta Bakery" }] };
     act(() => root.render(<LimitedClientPicker limitedTo={limitedTo} onPick={() => {}} disabled />));
     expect(container.querySelector("select")?.disabled).toBe(true);
+  });
+
+  it("ClientWorkspaceBar: ownPath null leaves the back link out (a limited person has no company-wide page)", () => {
+    const client = { kind: "company" as const, id: "acme", name: "Acme Ltd" };
+    const linkProps = (to: string) => ({ href: to });
+    act(() => root.render(<ClientWorkspaceBar client={client} active="seo" linkProps={linkProps} ownPath="/seo" />));
+    expect([...container.querySelectorAll("a")].find((a) => a.textContent?.includes("Our own"))?.getAttribute("href")).toBe("/seo");
+    act(() => root.render(<ClientWorkspaceBar client={client} active="seo" linkProps={linkProps} ownPath={null} />));
+    expect([...container.querySelectorAll("a")].some((a) => a.textContent?.includes("Our own"))).toBe(false);
+    expect(container.querySelector("h1")?.textContent).toBe("Acme Ltd");
   });
 });

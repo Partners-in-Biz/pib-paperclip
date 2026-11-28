@@ -392,7 +392,7 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
             }}
             active="social"
             linkProps={navigation.linkProps}
-            ownPath="/social"
+            ownPath={limitedTo ? null : "/social"}
             ownLabel="Own social"
             actions={off ? undefined : <Row>{newPost}</Row>}
           />

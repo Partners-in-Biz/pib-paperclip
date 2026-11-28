@@ -311,11 +311,11 @@ function SeoPageBody({ context }: PluginPageProps) {
         client={{ kind: client.kind, id: client.id, name: client.name, detail: client.domain ?? client.email }}
         active="seo"
         linkProps={nav.linkProps}
-        ownPath="/seo"
+        ownPath={limitedTo ? null : "/seo"}
         actions={newSprint}
       />
     ) : off ? (
-      <ClientWorkspaceBar client={{ kind: scope.kind, id: scope.id, name: "Client", detail: null }} active="seo" linkProps={nav.linkProps} ownPath="/seo" />
+      <ClientWorkspaceBar client={{ kind: scope.kind, id: scope.id, name: "Client", detail: null }} active="seo" linkProps={nav.linkProps} ownPath={limitedTo ? null : "/seo"} />
     ) : null;
     return (
       <PageFrame accent="seo">
