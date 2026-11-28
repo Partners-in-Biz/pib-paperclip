@@ -180,6 +180,34 @@ describe.skipIf(!available)("a person limited to his own companies (enforce)", (
     expect((await route("acme")).status).toBe(200);
   });
 
+  it("fails closed when his companies or a contact's companies cannot be read", async () => {
+    limit();
+    const db = harness.ctx.db as unknown as { query: (sql: string, params?: unknown[]) => Promise<unknown[]> };
+    const query = db.query;
+    const breakOn = (pattern: RegExp) => {
+      db.query = async (sql, params) => {
+        if (pattern.test(sql)) throw new Error("read failed");
+        return query(sql, params);
+      };
+    };
+    try {
+      // The guard's resolver (managers): the call is refused before any handler.
+      breakOn(/managers->>'ownerUserId'/);
+      expect(refusedWith(await act("seo.sprint", { sprintId: "sp-acme" }))).not.toMatch(/^not refused/);
+      const byManagers = await tool("list-sprints", { client: "company:acme" });
+      expect(byManagers.error).toBeTruthy();
+      expect(byManagers.data?.sprints).toBeUndefined();
+      // A contact's companies (crm_contacts.account_ids): no data comes back.
+      breakOn(/crm_contacts WHERE company_id = \$1 AND id = \$2/);
+      await expect(act("seo.sprint", { sprintId: "sp-jo" })).rejects.toThrow();
+      const byContact = await tool("list-sprints", { client: "contact:jo" });
+      expect(byContact.error).toBeTruthy();
+      expect(byContact.data?.sprints).toBeUndefined();
+    } finally {
+      db.query = query;
+    }
+  });
+
   it("with the switch off nothing changes: the same person sees every sprint", async () => {
     limit("off");
     const load = await act("seo.load");
