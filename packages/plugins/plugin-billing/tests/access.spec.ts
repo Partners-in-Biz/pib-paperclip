@@ -14,7 +14,8 @@ import { ADMIN_ONLY, accessCompanyScope, accessGrantScope, isRefusal } from "@pa
 import { assertPluginAccess, ACCESS_TEST_IDS } from "@partnersinbiz/pib-plugin-kit/access-testing";
 import manifest from "../src/manifest.js";
 import plugin, { TOOL_ACTIONS } from "../src/worker.js";
-import { ACCESS_TABLE, TOOL_ACTION_KEYS } from "../src/access-table.js";
+import { ACCESS_TABLE, SCOPED_ACTION_KEYS, TOOL_ACTION_KEYS } from "../src/access-table.js";
+import { CUSTOMER_RULES } from "../src/customer-scope.js";
 import { BILLING_TOOLS } from "../src/tools.js";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
@@ -74,14 +75,22 @@ describe("Billing access guard", () => {
     expect(direct).toEqual([]);
   });
 
-  it("no entry is scoped yet, every row names a Billing resource, and the table's ADMIN_ONLY is the kit's", () => {
+  it("scoped rows are exactly the customer-checked keys, their tools and client-summary; company-wide areas stay closed", () => {
+    const scoped = new Set([...SCOPED_ACTION_KEYS, "api:client-summary", ...Object.entries(TOOL_ACTION_KEYS).filter(([, action]) => SCOPED_ACTION_KEYS.includes(action)).map(([tool]) => `tool:${tool}`)]);
     for (const [key, entry] of Object.entries(ACCESS_TABLE)) {
       if (typeof entry !== "object" || !("resource" in entry)) continue;
       expect(entry.resource, key).toMatch(/^billing\.(invoices|quotes|expenses|bills|time|plans|reports|settings)$/);
-      expect(entry.scoped, key).toBeUndefined();
+      expect(entry.scoped === true, key).toBe(scoped.has(key));
+      // Bills, expenses, reports and settings are the company's own: never limited to a person's companies.
+      if (/^billing\.(expenses|bills|reports|settings)$/.test(entry.resource)) expect(entry.scoped, key).toBeUndefined();
+    }
+    // Every scoped key has a customer rule and no rule is left without a scoped row (a row without a rule refuses).
+    expect(Object.keys(CUSTOMER_RULES).sort()).toEqual([...SCOPED_ACTION_KEYS].sort());
+    for (const closed of ["billing.dunning", "billing.run-dunning", "billing.set-dunning-optout", "billing.payments", "billing.drive-catchup", "billing.retry-ledger", "billing.simulate-payment", "canvas.cards.search", "api:cockpit", "api:invoice-grant"]) {
+      expect((ACCESS_TABLE[closed] as { scoped?: true }).scoped, closed).toBeUndefined();
     }
     expect(ACCESS_TABLE["billing.preferences-save"]).toBe(ADMIN_ONLY);
-    expect(ACCESS_TABLE["api:client-summary"]).toEqual({ resource: "billing.invoices", action: "view" });
+    expect(ACCESS_TABLE["api:client-summary"]).toEqual({ resource: "billing.invoices", action: "view", scoped: true });
     expect(ACCESS_TABLE["api:invoice-grant"]).toEqual({ resource: "billing.invoices", action: "approve" });
   });
 
@@ -103,7 +112,7 @@ describe("Billing actions that reach a client with no further approval need bill
   };
 
   it("retry-send: an operator with invoices edit but not approve is refused under enforce; with approve it reaches the handler", async () => {
-    expect(ACCESS_TABLE["billing.retry-send"]).toEqual({ resource: "billing.invoices", action: "approve" });
+    expect(ACCESS_TABLE["billing.retry-send"]).toEqual({ resource: "billing.invoices", action: "approve", scoped: true });
     const editOnly = await boot("enforce", ["billing.invoices:view", "billing.invoices:edit"]);
     expect(isRefusal(await editOnly.performAction("billing.retry-send", {}, operator))).toBe(true);
     const approver = await boot("enforce", ["billing.invoices:approve"]);

@@ -34,6 +34,8 @@ export interface Harness {
   tools: Map<string, (params: unknown, run: unknown) => Promise<unknown>>;
   jobs: Map<string, (job: unknown) => Promise<void>>;
   state: Map<string, unknown>;
+  /** The host's company members (`ctx.access.members.list`), for the access guard under `enforce`. */
+  members: Array<{ companyId: string; principalType: "user"; principalId: string; status: string; membershipRole: string }>;
   call: <T = any>(action: string, params?: Record<string, unknown>, context?: unknown) => Promise<T>;
   runJob: (key: string) => Promise<void>;
   reset: () => Promise<void>;
@@ -89,6 +91,7 @@ export async function startHarness(): Promise<Harness> {
   const config: Harness["config"] = new Map();
   const statements: string[] = [];
   const state = new Map<string, unknown>();
+  const members: Harness["members"] = [];
   const actions: Harness["actions"] = new Map();
   const tools: Harness["tools"] = new Map();
   const jobs: Harness["jobs"] = new Map();
@@ -178,6 +181,7 @@ export async function startHarness(): Promise<Harness> {
       },
     },
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined },
+    access: { members: { list: async (input: { companyId: string }) => members.filter((m) => m.companyId === input.companyId) } },
     actions: { register: (key: string, fn: (params: Record<string, unknown>, context: unknown) => Promise<unknown>) => actions.set(key, fn) },
     tools: { register: (name: string, _decl: unknown, fn: (params: unknown, run: unknown) => Promise<unknown>) => tools.set(name, fn) },
     jobs: { register: (key: string, fn: (job: unknown) => Promise<void>) => jobs.set(key, fn) },
@@ -199,6 +203,7 @@ export async function startHarness(): Promise<Harness> {
     tools,
     jobs,
     state,
+    members,
     async call(action, params = {}, context = userContext()) {
       const fn = actions.get(action);
       if (!fn) throw new Error(`No action ${action}`);

@@ -56,7 +56,7 @@ export function timeLineDescription(entry: { description: string; minutes: numbe
   return `${entry.description}${day}: ${hoursLabel(entry.minutes)} @ ${formatMoneyMinor(entry.rateMinor, entry.currency)}/h`;
 }
 
-function ownerOf(context: PluginPerformActionContext, params: Record<string, unknown>): string {
+export function ownerOf(context: PluginPerformActionContext, params: Record<string, unknown>): string {
   const explicit = optionalString(params, "owner");
   if (explicit) return explicit.slice(0, 120);
   return actorLabel(context) ?? "unknown";
