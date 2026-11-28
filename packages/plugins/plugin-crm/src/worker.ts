@@ -1650,10 +1650,24 @@ function refuseCanaryFlag(params: Record<string, unknown>): void {
   if (flagged) throw new CrmError("The canary flag can only be set by an owner or admin.");
 }
 
+/**
+ * The same rule on a built update patch: `patchFrom` spreads `custom` into the patch and `applyFieldPatch` writes a key that
+ * is a column into the column, so `custom: { tags: ["Canary"] }` must be caught here, not on the raw params. `checkTags`
+ * only for a company (the canary tag hides its hand-offs).
+ */
+function refuseCanaryPatch(viewer: Viewer, patch: Record<string, unknown>, checkTags: boolean): void {
+  if (!viewer.linkedCompanyIds) return;
+  const tags = checkTags && patch.tags != null ? asStringList(patch.tags) : [];
+  if (Object.keys(patch).some((key) => key.trim().toLowerCase() === "canary") || tags.some((tag) => tag.trim().toLowerCase() === "canary")) {
+    throw new CrmError("The canary flag can only be set by an owner or admin.");
+  }
+}
+
 async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
-  if (viewer.linkedCompanyIds) refuseCanaryFlag(params);
   const account = await requireAccount(ctx, viewer, companyIdOf(params));
   const lifecycleBefore = account.lifecycle;
+  const patch = patchFrom(params, ["name", "domain", "lifecycle", "currency", "tags", ...BILLING_KEYS]);
+  refuseCanaryPatch(viewer, patch, true);
   const result = applyFieldPatch({
     columns: {
       name: account.name,
@@ -1670,7 +1684,7 @@ async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<
     custom: account.custom,
     humanOwned: account.humanOwned,
     columnKeys: columnKeysFor("company"),
-    patch: patchFrom(params, ["name", "domain", "lifecycle", "currency", "tags", ...BILLING_KEYS]),
+    patch,
     source,
   });
   normalizeAccountColumns(result.columns);
@@ -1796,6 +1810,8 @@ async function createContactRecord(ctx: PluginContext, viewer: Viewer, params: R
 async function updateContact(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
   const contact = await requireContact(ctx, viewer, contactIdOf(params));
   const lifecycleBefore = contact.lifecycle;
+  const contactPatch = patchFrom(params, ["name", "emails", "phones", "lifecycle", "tags", "nextActionKind", "nextActionDueAt"]);
+  refuseCanaryPatch(viewer, contactPatch, false);
   const result = applyFieldPatch({
     columns: {
       name: contact.name,
@@ -1809,7 +1825,7 @@ async function updateContact(ctx: PluginContext, viewer: Viewer, params: Record<
     custom: contact.custom,
     humanOwned: contact.humanOwned,
     columnKeys: columnKeysFor("contact"),
-    patch: patchFrom(params, ["name", "emails", "phones", "lifecycle", "tags", "nextActionKind", "nextActionDueAt"]),
+    patch: contactPatch,
     source,
   });
   contact.name = String(result.columns.name ?? contact.name).trim();
@@ -1969,12 +1985,14 @@ function linkParam(params: Record<string, unknown>, key: string, kind: "company"
  */
 async function updateDealRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
   const deal = await requireDeal(ctx, viewer, requiredString(params, "dealId"));
+  const dealPatch = patchFrom(params, ["title", "amountMinor", "currency"]);
+  refuseCanaryPatch(viewer, dealPatch, false);
   const result = applyFieldPatch({
     columns: { title: deal.title, amountMinor: deal.amountMinor, currency: deal.currency },
     custom: deal.custom,
     humanOwned: deal.humanOwned,
     columnKeys: columnKeysFor("deal"),
-    patch: patchFrom(params, ["title", "amountMinor", "currency"]),
+    patch: dealPatch,
     source,
   });
   const next: DealDraft = { ...deal, custom: result.custom };

@@ -270,7 +270,7 @@ describe("PAR-15253: a limited person creates his own company under enforce", ()
     expect(row(rows as any, viaTool.data!.id).manager_user_ids ?? []).toEqual([]);
   });
 
-  it("2c: the tool with no onBehalfOfUserId and no resolvable run is refused, nothing created", async () => {
+  it("guard refuses a run it cannot look up (non-UUID harness ids; not proof of plan 2c)", async () => {
     const { harness, store: rows } = await world("enforce");
     (rows as any).heartbeat_runs = [{ id: "run-1", company_id: CO, agent_id: "agent-1", responsible_user_id: JAN }];
     const out = await harness.executeTool<{ data?: Record<string, any>; error?: string }>("create-company", { name: "Run Co" }, { companyId: CO, agentId: "agent-1", runId: "run-1" } as never);
@@ -320,7 +320,7 @@ describe("PAR-15253: a limited person creates his own company under enforce", ()
     expect(out.filled).toContain("phone");
   });
 
-  it("3: a linked decision with no verifiable person: refused, nothing written", async () => {
+  it("guard refuses a run with no person (not proof of plan 3; the handler line is untested)", async () => {
     const { harness, store: rows } = await world("enforce");
     (rows as any).heartbeat_runs = [{ id: "run-1", company_id: CO, agent_id: "agent-1", responsible_user_id: null }];
     const before = snap(rows as any);
@@ -332,17 +332,35 @@ describe("PAR-15253: a limited person creates his own company under enforce", ()
   });
 
   it("7: the canary flag is refused on create, on his own company's dedupe hit and on update-company; the owner may still set it", async () => {
-    const { act, store: rows } = await world("enforce");
+    const { act, tool, store: rows } = await world("enforce");
     const flags = [{ custom: { canary: true } }, { custom: { canary: false } }, { tags: ["Canary"] }];
+    // On update, a key inside `custom` that is a column overwrites the column: the check runs on the built patch.
+    const updateOnly = [...flags, { custom: { tags: ["Canary"] } }];
     const before = snap(rows as any);
     for (const flag of flags) {
       await expect(act("crm.create-company", { name: "Flag Co", ...flag })).rejects.toThrow(CANARY);
       await expect(act("crm.create-company", { name: "Acme Plumbing", ...flag })).rejects.toThrow(CANARY);
+    }
+    for (const flag of updateOnly) {
       await expect(act("crm.update-company", { companyRecordId: "acme", ...flag })).rejects.toThrow(CANARY);
+      expect((await tool("update-company", { companyRecordId: "acme", ...flag })).error).toBe(CANARY);
     }
     expect(snap(rows as any)).toBe(before);
     const ok = await act("crm.create-company", { name: "Owner Flag Co", custom: { canary: true } }, OWNER);
     expect(row(rows as any, ok.id).custom.canary).toBe(true);
+  });
+
+  it("7b: the canary custom key is refused on his own deal and contact, on the action and the tool", async () => {
+    const { act, tool, store: rows } = await world("enforce");
+    const before = snap(rows as any) + JSON.stringify([(rows as any).deals, (rows as any).contacts]);
+    for (const custom of [{ canary: true }, { canary: false }]) {
+      await expect(act("crm.update-deal", { dealId: "d-acme", custom })).rejects.toThrow(CANARY);
+      await expect(act("crm.update-contact", { contactId: "ada", custom })).rejects.toThrow(CANARY);
+      expect((await tool("update-deal", { dealId: "d-acme", custom })).error).toBe(CANARY);
+      expect((await tool("update-contact", { contactId: "ada", custom })).error).toBe(CANARY);
+    }
+    expect(snap(rows as any) + JSON.stringify([(rows as any).deals, (rows as any).contacts])).toBe(before);
+    expect((await act("crm.update-deal", { dealId: "d-acme", custom: { note: "x" } })).id).toBe("d-acme");
   });
 
   it("8: owner on enforce keeps today's match on any company", async () => {
