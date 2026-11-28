@@ -1566,13 +1566,26 @@ async function listDealProductsRecord(ctx: PluginContext, viewer: Viewer, params
 async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const name = requiredString(params, "name");
   const domain = normalizeDomain(optionalString(params, "domain"));
-  // A limited person (linked decision, enforce): the company is his alone, and a match on another's company is refused
-  // before anything is read back, saved or logged.
+  // A limited person (linked decision, enforce): the company is his alone. Nothing is read or written without a verified
+  // person, he cannot set the canary flag, and a match that is not his is refused with one fixed answer.
   if (viewer.linkedCompanyIds && !viewer.userId) {
     throw new CrmError("Could not verify who is creating this company, so nothing was created. Sign in and try again.");
   }
-  const [existing] = await companiesByDomainOrName(ctx, viewer.companyId, domain, name);
-  if (existing && viewer.linkedCompanyIds && !viewer.linkedCompanyIds.includes(existing.id) && existing.ownerUserId !== viewer.userId) {
+  if (viewer.linkedCompanyIds) refuseCanaryFlag(params);
+  const matches = await companiesByDomainOrName(ctx, viewer.companyId, domain, name);
+  const linkedIds = viewer.linkedCompanyIds;
+  const existing = linkedIds ? matches.find((match) => linkedIds.includes(match.id)) : matches[0];
+  if (linkedIds && matches.length && !existing) {
+    try {
+      await ctx.activity.log({
+        companyId: viewer.companyId,
+        message: "A limited person's company create matched a company that is not theirs",
+        entityType: "crm_company",
+        metadata: { userId: viewer.userId, agentId: viewer.agentId, runId: viewer.runId ?? null, attemptedName: name, attemptedDomain: domain },
+      });
+    } catch (error) {
+      ctx.logger.info("Could not write the refused-create audit entry", { error: error instanceof Error ? error.message : String(error) });
+    }
     throw new CrmError("A company with this name or website is already in the CRM. Ask an owner or admin to add you to its Managed by.");
   }
   if (existing) {
@@ -1629,7 +1642,16 @@ async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<
   return account;
 }
 
+/** A limited person cannot set the canary flag (custom `canary`, any value) or the tag `canary` (any case): it hides a company's hand-offs and revenue. */
+function refuseCanaryFlag(params: Record<string, unknown>): void {
+  const custom = params.custom && typeof params.custom === "object" && !Array.isArray(params.custom) ? (params.custom as Record<string, unknown>) : {};
+  const tags = params.tags == null ? [] : asStringList(params.tags);
+  const flagged = Object.keys(custom).some((key) => key.trim().toLowerCase() === "canary") || tags.some((tag) => tag.trim().toLowerCase() === "canary");
+  if (flagged) throw new CrmError("The canary flag can only be set by an owner or admin.");
+}
+
 async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
+  if (viewer.linkedCompanyIds) refuseCanaryFlag(params);
   const account = await requireAccount(ctx, viewer, companyIdOf(params));
   const lifecycleBefore = account.lifecycle;
   const result = applyFieldPatch({

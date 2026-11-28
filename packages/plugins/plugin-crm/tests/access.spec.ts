@@ -64,10 +64,10 @@ describe("CRM access guard", () => {
       ...both([
         "find-records", "bulk-tag-contacts", "update-company", "update-client-profile", "log-activity", "update-contact", "link-contact",
         "set-email-status", "score-contact", "export-person-data", "request-erasure", "move-deal", "update-deal", "call-list", "log-outcome",
-        "set-next-action",
+        "set-next-action", "create-company",
       ]),
       "crm.load", "crm.client-workspace", "crm.activities", "canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related",
-      "crm.set-human-owned", "crm.desk", "crm.create-company", "tool:create-company",
+      "crm.set-human-owned", "crm.desk",
       ...["get-company", "get-client-profile", "field-history", "get-contact", "contact-graph", "find-duplicates", "export-contacts", "list-deals", "list-stages", "list-deal-products", "add-deal-product"].map((name) => `tool:${name}`),
     ];
     // Stage B-3 (PAR-15205; tests/access-scoping-clients.spec.ts): every row of the client areas (sites incl. wp-* and

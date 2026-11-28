@@ -254,37 +254,65 @@ describe("the B-D3 rule (domain)", () => {
 
 describe("PAR-15253: a limited person creates his own company under enforce", () => {
   const REFUSAL = "A company with this name or website is already in the CRM. Ask an owner or admin to add you to its Managed by.";
+  const CANARY = "The canary flag can only be set by an owner or admin.";
+  const row = (rows: Record<string, any[]>, id: string) => rows.companies.find((c) => c.id === id) as Record<string, any>;
+  const snap = (rows: Record<string, any[]>) => JSON.stringify({ companies: rows.companies, activities: rows.activities ?? [], handoffs: rows.handoffs ?? [] });
 
-  it("action and agent tool: owner = him, no managers, and it is then his", async () => {
-    const { act, tool, harness } = await world("enforce");
-    const made = await act("crm.create-company", { name: "Fresh Ltd" });
-    expect(isRefusal(made)).toBe(false);
-    const stored = (harness as any).store?.companies ?? [];
-    const mine = stored.find((c: any) => c.id === made.id);
-    if (mine) {
-      expect(mine.owner_user_id).toBe(JAN);
-      expect(mine.manager_user_ids ?? []).toEqual([]);
-    }
-    expect(made.ownerUserId).toBe(JAN);
+  it("1 + 2a/2b: the action and the tool as him: owner = him, no managers, then it is his", async () => {
+    const { act, tool, store: rows } = await world("enforce");
+    const made = await act("crm.create-company", { name: "New Co" });
+    expect(row(rows as any, made.id).owner_user_id).toBe(JAN);
+    expect(row(rows as any, made.id).manager_user_ids ?? []).toEqual([]);
     expect(ids((await act("crm.load", {})).accounts)).toContain(made.id);
     expect((await tool("get-company", { companyRecordId: made.id })).data?.id).toBe(made.id);
     const viaTool = await tool("create-company", { name: "Tool Ltd" });
-    expect(viaTool.data?.ownerUserId).toBe(JAN);
+    expect(row(rows as any, viaTool.data!.id).owner_user_id).toBe(JAN);
+    expect(row(rows as any, viaTool.data!.id).manager_user_ids ?? []).toEqual([]);
   });
 
-  it("a name or website match on another member's company is refused and nothing changes", async () => {
-    const { act, tool } = await world("enforce");
-    const before = JSON.stringify((await tool("get-company", { companyRecordId: "globex" }, OWNER)).data);
-    for (const params of [{ name: "globex" }, { name: "Other", domain: "globex.test", tags: ["x"] }]) {
-      await expect(act("crm.create-company", params)).rejects.toThrow(REFUSAL);
+  it("2c: the tool with no onBehalfOfUserId and no resolvable run is refused, nothing created", async () => {
+    const { harness, store: rows } = await world("enforce");
+    (rows as any).heartbeat_runs = [{ id: "run-1", company_id: CO, agent_id: "agent-1", responsible_user_id: JAN }];
+    const out = await harness.executeTool<{ data?: Record<string, any>; error?: string }>("create-company", { name: "Run Co" }, { companyId: CO, agentId: "agent-1", runId: "run-1" } as never);
+    // The harness company id is not a UUID, so the guard's run lookup (acting-person.ts) answers "not found": the call is refused
+    // before the handler and nothing is created. The handler's own run fallback (viewerFor) is the existing code the plan names.
+    expect(out.error).toMatch(/Access refused/);
+    expect((rows as any).companies.some((c: any) => c.name === "Run Co")).toBe(false);
+  });
+
+  it("4: a name match and a website match on another member's company: one fixed refusal, nothing written or emitted, one audit entry", async () => {
+    const { act, tool, store: rows, emit, harness } = await world("enforce");
+    const before = snap(rows as any);
+    const count = (rows as any).companies.length;
+    const answers: unknown[] = [];
+    for (const params of [{ name: "globex", tags: ["x"], phone: "1" }, { name: "Other", domain: "globex.test", tags: ["x"], phone: "1" }]) {
+      await expect(act("crm.create-company", params)).rejects.toThrow(new RegExp(`^${REFUSAL.replace(/[.]/g, "\\.")}$`));
       const viaTool = await tool("create-company", params);
-      expect(JSON.stringify(viaTool)).toContain(REFUSAL);
-      expect(JSON.stringify(viaTool)).not.toContain("globex.test");
+      answers.push(viaTool);
+      expect(viaTool).toMatchObject({ error: REFUSAL });
+      expect(JSON.stringify(viaTool)).not.toMatch(/globex|matchedOn|owner_user|ownerUserId/i);
     }
-    expect(JSON.stringify((await tool("get-company", { companyRecordId: "globex" }, OWNER)).data)).toBe(before);
+    expect(answers[0]).toEqual(answers[1]);
+    expect(snap(rows as any)).toBe(before);
+    expect((rows as any).companies.length).toBe(count);
+    expect(emit).not.toHaveBeenCalledWith(expect.stringMatching(/company\.upserted/), expect.anything());
+    const audits = harness.activity.filter((a) => a.message === "A limited person's company create matched a company that is not theirs");
+    expect(audits).toHaveLength(4);
+    expect(audits[0]).toMatchObject({ entityType: "crm_company", metadata: { userId: JAN, attemptedName: "globex" } });
+    expect(audits[0]!.entityId).toBeUndefined();
   });
 
-  it("a match on his own company fills empty fields and returns it", async () => {
+  it("5: mixed matches: his own company is taken even when another member's matches first", async () => {
+    const { act, store: rows } = await world("enforce");
+    (rows as any).companies.push(company("acme-dup", "Other Acme", { domain: "acme.co.za", created_at: "2025-01-01T00:00:00Z" }));
+    const before = JSON.stringify(row(rows as any, "acme-dup"));
+    const out = await act("crm.create-company", { name: "Acme Plumbing", domain: "acme.co.za", phone: "012" });
+    expect(out.id).toBe("acme");
+    expect(out.matched).toBe(true);
+    expect(JSON.stringify(row(rows as any, "acme-dup"))).toBe(before);
+  });
+
+  it("6: a match on only his own company fills empty fields and returns it", async () => {
     const { act } = await world("enforce");
     const out = await act("crm.create-company", { name: "Acme Plumbing", phone: "012" });
     expect(out.matched).toBe(true);
@@ -292,14 +320,39 @@ describe("PAR-15253: a limited person creates his own company under enforce", ()
     expect(out.filled).toContain("phone");
   });
 
-  it("the owner (scope all) keeps today's match on any company", async () => {
+  it("3: a linked decision with no verifiable person: refused, nothing written", async () => {
+    const { harness, store: rows } = await world("enforce");
+    (rows as any).heartbeat_runs = [{ id: "run-1", company_id: CO, agent_id: "agent-1", responsible_user_id: null }];
+    const before = snap(rows as any);
+    const out = await harness.executeTool<{ data?: Record<string, any>; error?: string }>("create-company", { name: "Nobody Co" }, { companyId: CO, agentId: "agent-1", runId: "run-1" } as never);
+    // Guard level: no verifiable person, refused. The handler's own null-userId refusal under a linked decision is a second line
+    // the harness cannot reach (the guard refuses first); it is read-checked in worker.ts createCompany.
+    expect(out.error).toMatch(/Access refused/);
+    expect(snap(rows as any)).toBe(before);
+  });
+
+  it("7: the canary flag is refused on create, on his own company's dedupe hit and on update-company; the owner may still set it", async () => {
+    const { act, store: rows } = await world("enforce");
+    const flags = [{ custom: { canary: true } }, { custom: { canary: false } }, { tags: ["Canary"] }];
+    const before = snap(rows as any);
+    for (const flag of flags) {
+      await expect(act("crm.create-company", { name: "Flag Co", ...flag })).rejects.toThrow(CANARY);
+      await expect(act("crm.create-company", { name: "Acme Plumbing", ...flag })).rejects.toThrow(CANARY);
+      await expect(act("crm.update-company", { companyRecordId: "acme", ...flag })).rejects.toThrow(CANARY);
+    }
+    expect(snap(rows as any)).toBe(before);
+    const ok = await act("crm.create-company", { name: "Owner Flag Co", custom: { canary: true } }, OWNER);
+    expect(row(rows as any, ok.id).custom.canary).toBe(true);
+  });
+
+  it("8: owner on enforce keeps today's match on any company", async () => {
     const { act } = await world("enforce");
     const out = await act("crm.create-company", { name: "Globex" }, OWNER);
     expect(out.matched).toBe(true);
     expect(out.id).toBe("globex");
   });
 
-  it.each([null, "off", "report"] as const)("switch %s: today's answer, a match on another's company still matches", async (mode) => {
+  it.each([null, "off", "report"] as const)("8: switch %s: today's answer, a match on another's company still matches", async (mode) => {
     const { act } = await world(mode);
     const out = await act("crm.create-company", { name: "Globex" }, OWNER);
     expect(out.matched).toBe(true);
