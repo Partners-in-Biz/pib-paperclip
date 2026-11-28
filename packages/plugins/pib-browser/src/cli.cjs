@@ -98,6 +98,8 @@ function parseArgs(argv) {
       args.url = argv[++i];
     } else if (arg === '--selector') {
       args.selector = argv[++i];
+    } else if (arg === '--text') {
+      args.text = argv[++i];
     } else if (arg === '--value') {
       args.value = argv[++i];
     } else if (arg === '--expect') {

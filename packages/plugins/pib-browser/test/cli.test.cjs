@@ -154,6 +154,19 @@ test('shot with valid args calls send', async () => {
   assert.equal(code, 3);
 });
 
+test('click --text reaches send args', async () => {
+  let req;
+  const code = await run(
+    ['click', '--identity', 'pib:paperclip', '--issue', 'PAR-1', '--selector', 'button', '--text', 'Approve', '--approval', 'PAR-2'],
+    { PAPERCLIP_API_KEY: 'x' },
+    { stdout: new MockOutput(), stderr: new MockOutput(), send: async (r) => { req = r; return { exit: 0, ok: true }; } }
+  );
+  assert.equal(code, 0);
+  assert.equal(req.args.text, 'Approve');
+  assert.equal(req.args.selector, 'button');
+  assert.equal(req.args.approval, 'PAR-2');
+});
+
 test('token never appears in stdout/stderr', async () => {
   const CANARY = 'UNIQUE_TOKEN_12345';
   const stdout = new MockOutput();
