@@ -103,12 +103,27 @@ export function chatBody(text: string, opts: { about: string | null; direct: boo
 export class AgentChat {
   private target: Promise<ChatTarget> | null = null;
   private agentsCache: AgentRow[] | null = null;
+  private voiceCapability: Promise<boolean> | null = null;
 
   constructor(private readonly ctx: AgentChatContext) {}
 
   private async agents(): Promise<AgentRow[]> {
     if (!this.agentsCache) this.agentsCache = await this.ctx.api.get<AgentRow[]>(`/companies/${this.ctx.companyId}/agents`);
     return this.agentsCache;
+  }
+
+  /**
+   * Whether the server can store the `voice` comment field (health `capabilities.voiceCommentMetadata`).
+   * Read once per call; a failed or missing read means no, so the turn posts exactly as before.
+   */
+  private serverStoresVoiceField(): Promise<boolean> {
+    if (!this.voiceCapability) {
+      this.voiceCapability = this.ctx.api
+        .get<{ capabilities?: { voiceCommentMetadata?: unknown } } | null>("/health")
+        .then((h) => typeof h?.capabilities?.voiceCommentMetadata === "number" && h.capabilities.voiceCommentMetadata >= 1)
+        .catch(() => false);
+    }
+    return this.voiceCapability;
   }
 
   /** The chat issue, fetched or created once per call (the server's ensure is idempotent). A failure is retried next time. */
@@ -179,6 +194,8 @@ export class AgentChat {
     const target = await this.resolve();
     const { context } = this.ctx;
     const task = context.kind === "task" ? context : null;
+    // Only a Direct spoken turn is marked; typed chat and the classic voice path never carry the field.
+    const marked = (this.ctx.direct ?? false) && (await this.serverStoresVoiceField());
     const row = await this.ctx.api.post<{ id?: unknown; createdAt?: unknown } | null>(`/issues/${target.issueId}/comments`, {
       body: chatBody(text, {
         about: task?.aboutLine ?? null,
@@ -187,6 +204,7 @@ export class AgentChat {
         block: context.blockSent ? null : (task?.block ?? null),
       }),
       clientRequestId,
+      ...(marked ? { metadata: { version: 1, voice: { mode: "direct" }, sections: [] } } : {}),
     });
     if (row && typeof row === "object") context.blockSent = true;
     return {
