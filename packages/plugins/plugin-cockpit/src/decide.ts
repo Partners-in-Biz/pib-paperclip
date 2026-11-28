@@ -72,7 +72,9 @@ export async function readCardIndex(env: Env, companyId: string): Promise<CardIn
 
 /** Reads the waiting issues' cards (oldest first) and stores them. Throws on a failed write. Never runs inside a page call. */
 export async function refreshOwnerCards(env: Env, companyId: string): Promise<CardIndex> {
-  const roles = await getRoles(env.ctx, companyId);
+  // Neither read may hang the refresh for good: it holds the company's one refresh slot.
+  const roles = await withinDeadline(getRoles(env.ctx, companyId), INDEX_CALL_MS, "The owner lookup");
+  const previous = await withinDeadline(readCardIndex(env, companyId), INDEX_CALL_MS, "The stored card list").catch(() => null);
   const result = await readOwnerCards(env, companyId, new Date(0), {
     scope: "waiting",
     order: "asc",
@@ -82,10 +84,13 @@ export async function refreshOwnerCards(env: Env, companyId: string): Promise<Ca
   });
   const index: CardIndex = {
     at: env.now().toISOString(),
-    pending: result.pending.map((c) => ({ id: c.id, issueId: c.issueId, kind: c.kind, status: c.status, title: c.title, text: c.text, createdAt: c.createdAt, addresseeUserId: c.addresseeUserId ?? null })),
+    // A read that failed outright (the issue list, a refused capability) comes back empty and unread: keep the last good list.
+    pending: (result.pending.length === 0 && result.unread && previous ? previous.pending : result.pending).map((c) => ({ id: c.id, issueId: c.issueId, kind: c.kind, status: c.status, title: c.title, text: c.text, createdAt: c.createdAt, addresseeUserId: c.addresseeUserId ?? null })),
     unread: result.unread,
   };
   await env.ctx.state.set(INDEX_KEY(companyId), index as unknown as Record<string, unknown>);
+  // A queue built before this list existed must not hide it for the rest of its 60 s.
+  clearDecideCache(companyId);
   return index;
 }
 
@@ -157,26 +162,35 @@ function assemble(g: Gathered, ownerUserId: string, now: Date): DecideItem[] {
 }
 
 /** Who may read the queue: the company's owner, signed in as a person. Fails closed. */
-async function requireOwnerOrNot(env: Env, context: PluginPerformActionContext): Promise<{ companyId: string; ownerUserId: string; isOwner: boolean }> {
+/** `read`, or a refusal after `ms`: a read that hangs must not hold the call past the host's RPC limit. Fails closed. */
+function withinDeadline<T>(read: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new CockpitError(`${what} did not answer in time`)), Math.max(0, ms));
+  });
+  return Promise.race([read, late]).finally(() => clearTimeout(timer));
+}
+
+async function requireOwnerOrNot(env: Env, context: PluginPerformActionContext, deadlineMs: number): Promise<{ companyId: string; ownerUserId: string; isOwner: boolean }> {
   if (!context.companyId) throw new CockpitError("Company is required");
   const actor = context.actor;
   if (!actor || actor.type !== "user") throw new CockpitError("Only a board user can read the Decide queue");
   const caller = assignableUser(typeof actor.userId === "string" ? actor.userId : null);
   if (!caller) throw new CockpitError("Only a board user can read the Decide queue");
-  const roles = await getRoles(env.ctx, context.companyId);
+  const roles = await withinDeadline(getRoles(env.ctx, context.companyId), deadlineMs, "The owner lookup");
   const owner = assignableUser(roles?.ownerUserId ?? null);
   return { companyId: context.companyId, ownerUserId: owner ?? "", isOwner: !!owner && owner === caller };
 }
 
 export async function decideQueue(env: Env, context: PluginPerformActionContext): Promise<DecideQueue> {
-  const { companyId, ownerUserId, isOwner } = await requireOwnerOrNot(env, context);
+  const startedAt = Date.now();
+  const { companyId, ownerUserId, isOwner } = await requireOwnerOrNot(env, context, QUEUE_MS);
   const now = env.now();
   if (!isOwner) return { items: [], notOwner: true, partial: [], cardsAsOf: null, cardsRefreshing: false, builtAt: now.toISOString() };
 
   const hit = cache.get(companyId);
   if (hit && now.getTime() - hit.at < CACHE_MS) return { ...hit.value, cardsRefreshing: cardsRefreshing(companyId) };
 
-  const startedAt = Date.now();
   const log = (text: string, meta: Record<string, unknown>) => env.ctx.logger.info(text, meta);
   const budget = briefBudget(log, { totalMs: QUEUE_MS });
   const gathered: Gathered = {};
@@ -184,7 +198,7 @@ export async function decideQueue(env: Env, context: PluginPerformActionContext)
     // The index read is one state key: it comes first so a stale one starts its refresh at once.
     const index = await budget.guard("cards", () => readCardIndex(env, companyId), null as CardIndex | null);
     gathered.index = index;
-    if (!index || now.getTime() - Date.parse(index.at) > INDEX_STALE_MS) startCardRefresh(env, companyId);
+    if (!index || !(now.getTime() - Date.parse(index.at) <= INDEX_STALE_MS)) startCardRefresh(env, companyId);
     await Promise.all([
       budget.guard("asks", () => listOpenAsks(env, companyId, 200), [] as AskRow[]).then((asks) => {
         gathered.asks = asks;

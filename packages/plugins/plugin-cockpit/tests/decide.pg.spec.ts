@@ -4,6 +4,7 @@
  * inside the call; the call answers inside its deadline whatever hangs.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { buildOwnerDigest } from "../src/digest.js";
 import { loadCompanyData, waitingSplit } from "../src/brief.js";
 import { clearDecideCache, readCardIndex, refreshOwnerCards, cardsRefreshing, INDEX_STALE_MS, type DecideQueue } from "../src/decide.js";
 import { readOwnerCards } from "../src/digest.js";
@@ -92,6 +93,15 @@ d("the Decide queue (Postgres)", () => {
   };
 
   /** Advances fake time in small steps, letting real I/O run in between, until `promise` settles or `limitMs` of fake time pass. */
+  /** Lets the background refresh the call started run to its end on fake time, so it frees its slot. */
+  async function drainFake(w: Hybrid) {
+    for (let i = 0; i < 160 && cardsRefreshing(A); i += 1) {
+      await vi.advanceTimersByTimeAsync(250);
+      await realWait(4);
+    }
+    void w;
+  }
+
   async function runFake<T>(promise: Promise<T>, limitMs: number): Promise<{ value?: T; elapsed: number; settled: boolean }> {
     let settled = false;
     let value: T | undefined;
@@ -185,20 +195,22 @@ d("the Decide queue (Postgres)", () => {
     expect(run.value!.partial.join(" ")).toMatch(/approvals/);
     expect(run.value!.items.some((i) => i.ref.kind === "ask")).toBe(true);
     // The refresh the call started in the background has its own 5 s limit on the hung read: the call never waited for it.
+    await drainFake(w);
     expect(scans).toBeGreaterThan(0);
   });
 
-  it("gives what it has when a read ignores the section limits (outer race)", async () => {
+  it("cuts a hung card-index read with its own limit and still answers", async () => {
     const w = await make();
     const i1 = await issue(w, "Slimwerk deploy");
     await ask(w, i1.id, { question: "Ship?", kind: "decision", options: ["Yes", "No"] });
-    // The index read itself never answers, and the guard's limit is the first thing to cut it.
+    // The index read itself never answers: the section guard cuts it (the 17 s outer race is only the safety net behind it).
     const realGet = w.ctx.state.get.bind(w.ctx.state);
     (w.ctx.state as unknown as { get: unknown }).get = (key: { stateKey: string }) => (key.stateKey.startsWith("decide-cards:") ? new Promise(() => undefined) : realGet(key as never));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const run = await runFake(queue(w), 20_000);
     expect(run.settled).toBe(true);
     expect(run.elapsed).toBeLessThan(20_000);
+    await drainFake(w);
     expect(run.value!.partial.join(" ")).toMatch(/stored approval cards/);
     expect(run.value!.items).toHaveLength(1);
   });
@@ -274,6 +286,7 @@ d("the Decide queue (Postgres)", () => {
     const [first, second] = await Promise.all([queue(w), queue(w)]);
     expect(first).toMatchObject({ cardsAsOf: null, cardsRefreshing: true });
     expect(second.cardsRefreshing).toBe(true);
+    for (let i = 0; i < 100 && calls === 0; i += 1) await new Promise((r) => setTimeout(r, 10));
     expect(calls).toBe(1);
     release();
     await settle(w);
@@ -329,5 +342,121 @@ d("the Decide queue (Postgres)", () => {
     (w.clock as unknown as { set: (iso: string) => void }).set(new Date(Date.parse(NOW) + 61_000).toISOString());
     await queue(w);
     expect(approvalReads).toBe(2);
+  });
+
+  it("reads the waiting scope oldest first through refreshOwnerCards, and a budget cut stores the oldest cards", async () => {
+    const w = await make();
+    const newest = await issue(w, "Newest blocked", { status: "blocked", updatedAt: "2026-11-27T00:00:00.000Z" });
+    const oldest = await issue(w, "Oldest in review", { status: "in_review", updatedAt: "2026-11-01T00:00:00.000Z" });
+    const mine = await issue(w, "Assigned to the owner", { status: "in_progress", ownerAssigned: true, updatedAt: "2026-11-05T00:00:00.000Z" });
+    const agentWork = await issue(w, "Agent work", { status: "in_progress", updatedAt: "2026-11-02T00:00:00.000Z" });
+    const middle = await issue(w, "Middle blocked", { status: "blocked", updatedAt: "2026-11-10T00:00:00.000Z" });
+    const read: string[] = [];
+    const cardFor = (id: string) => ({ id: `card-${id}`, kind: "request_confirmation", status: "pending", title: "Accept", payload: {}, createdAt: "2026-11-20T00:00:00.000Z" });
+    setCards(w, async (id) => {
+      read.push(id);
+      return [cardFor(id)];
+    });
+    const full = await refreshOwnerCards(w.env, A);
+    expect(read).toEqual([oldest.id, mine.id, middle.id, newest.id]);
+    expect(read).not.toContain(agentWork.id);
+    expect(full.pending.map((c) => c.issueId)).toEqual(read);
+    expect((await readCardIndex(w.env, A))!.pending).toHaveLength(4);
+
+    // The 60 s budget: each read moves the clock on by 25 s, so the first three get read and the newest is dropped.
+    read.length = 0;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(NOW));
+    setCards(w, async (id) => {
+      read.push(id);
+      vi.setSystemTime(new Date(Date.now() + 25_000));
+      return [cardFor(id)];
+    });
+    const cut = await refreshOwnerCards(w.env, A);
+    expect(read).toEqual([oldest.id, mine.id, middle.id]);
+    expect(cut.pending.map((c) => c.issueId)).toEqual([oldest.id, mine.id, middle.id]);
+    expect(cut.unread).toMatch(/1 of 4 open tasks/);
+    expect((await readCardIndex(w.env, A))!.pending.map((c) => c.issueId)).toEqual([oldest.id, mine.id, middle.id]);
+  });
+
+  it("the digest still reads every open issue, newest first, including agent work", async () => {
+    const w = await make();
+    const a = await issue(w, "Agent work", { status: "in_progress", updatedAt: "2026-11-02T00:00:00.000Z" });
+    const b = await issue(w, "In review", { status: "in_review", updatedAt: "2026-11-20T00:00:00.000Z" });
+    const c = await issue(w, "Mine", { status: "todo", ownerAssigned: true, updatedAt: "2026-11-10T00:00:00.000Z" });
+    const read: string[] = [];
+    setCards(w, async (id) => {
+      read.push(id);
+      return [];
+    });
+    await buildOwnerDigest(w.env, A);
+    expect(read).toEqual([b.id, c.id, a.id]);
+  });
+
+  it("refuses at once when the owner lookup hangs, inside the deadline", async () => {
+    const w = await make();
+    // The database object is shared by every world in this file: put the real query back afterwards.
+    const db = w.ctx.db as unknown as { query: (sql: string, params?: unknown[]) => Promise<unknown> };
+    const realQuery = db.query;
+    db.query = (sql: string, params?: unknown[]) => (/roles/i.test(sql) ? new Promise(() => undefined) : realQuery.call(db, sql, params));
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const call = queue(w).then((v) => ({ v }), (error: Error) => ({ error }));
+      const run = await runFake(call, 20_000);
+      expect(run.settled).toBe(true);
+      expect(run.elapsed).toBeLessThan(20_000);
+      expect(run.value).toHaveProperty("error");
+    } finally {
+      db.query = realQuery;
+    }
+  });
+
+  it("shows the cards on the second call after a first open with no index, within the 60 s cache", async () => {
+    const w = await make();
+    await issue(w, "Review round", { status: "in_review" });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    setCards(w, async () => {
+      await gate;
+      return [{ id: "c1", kind: "request_confirmation", status: "pending", title: "Accept", payload: {}, createdAt: "2026-11-20T00:00:00.000Z" }];
+    });
+    const first = await queue(w);
+    expect(first).toMatchObject({ cardsAsOf: null, cardsRefreshing: true });
+    expect(first.items).toHaveLength(0);
+    release();
+    await settle(w);
+    const second = await queue(w);
+    expect(second.cardsAsOf).toBe(NOW);
+    expect(second.items.map((i) => i.ref.id)).toEqual(["c1"]);
+  });
+
+  it("keeps the last good card list when a refresh reads nothing at all", async () => {
+    const w = await make();
+    await issue(w, "Review round", { status: "in_review" });
+    setCards(w, async () => [{ id: "c1", kind: "request_confirmation", status: "pending", title: "Accept", payload: {}, createdAt: "2026-11-20T00:00:00.000Z" }]);
+    await refreshOwnerCards(w.env, A);
+    setCards(w, async () => {
+      throw new Error("Plugin is missing required capability 'issue.interactions.read'");
+    });
+    const second = await refreshOwnerCards(w.env, A);
+    expect(second.unread).toMatch(/not allowed to read/);
+    expect(second.pending.map((c) => c.id)).toEqual(["c1"]);
+    expect((await readCardIndex(w.env, A))!.pending.map((c) => c.id)).toEqual(["c1"]);
+  });
+
+  it("treats an index with a corrupt time as stale and refreshes it", async () => {
+    const w = await make();
+    await w.ctx.state.set({ scopeKind: "company", scopeId: A, namespace: "cockpit", stateKey: `decide-cards:${A}` }, { at: "not a date", pending: [], unread: null });
+    let calls = 0;
+    await issue(w, "Review round", { status: "in_review" });
+    setCards(w, async () => {
+      calls += 1;
+      return [];
+    });
+    await queue(w);
+    await settle(w);
+    expect(calls).toBe(1);
   });
 });
