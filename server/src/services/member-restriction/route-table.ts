@@ -536,7 +536,8 @@ export const MEMBER_RESTRICTION_ROUTE_TABLE: readonly MemberRestrictionRouteEntr
  * Routes under `/api/plugins/:pluginId/` that do not call the plugin gate, by
  * design (4.8). The scan fails the build when any other route there lacks the
  * call (AC-K7). Webhooks and jobs run with no person (P11); the set-up pages
- * (detail, lifecycle, health, logs, config, jobs, local folders, dashboard)
+ * (detail, lifecycle, health, logs, config, jobs, local folders, voice run profile,
+ * dashboard)
  * have no route-table row, so they are closed for him (4.6, correction 4).
  */
 export const PLUGIN_GATE_NOT_GATED: ReadonlyArray<{ method: MemberRestrictionRouteMethod; path: string; reason: string }> = [
@@ -547,6 +548,9 @@ export const PLUGIN_GATE_NOT_GATED: ReadonlyArray<{ method: MemberRestrictionRou
     ["GET", "/jobs/:jobId/runs"], ["POST", "/jobs/:jobId/trigger"], ["GET", "/dashboard"],
     ["GET", "/companies/:companyId/local-folders"], ["GET", "/companies/:companyId/local-folders/:folderKey/status"],
     ["POST", "/companies/:companyId/local-folders/:folderKey/validate"], ["PUT", "/companies/:companyId/local-folders/:folderKey"],
+    // PAR-15298: the voice plugin's `voiceRunProfile` company setting, a set-up page like local folders.
+    ["GET", "/companies/:companyId/voice-run-profile"], ["PUT", "/companies/:companyId/voice-run-profile"],
+    ["DELETE", "/companies/:companyId/voice-run-profile"],
   ] as const).map(([method, suffix]) => ({ method, path: `/api/plugins/:pluginId${suffix}`, reason: "set-up page: closed (4.6)" })),
 ];
 

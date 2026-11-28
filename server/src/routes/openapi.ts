@@ -11300,6 +11300,25 @@ registerCurrentRoute({
   body: updateDocumentAnnotationThreadSchema,
 });
 
+// PAR-15298: board-only company setting `voiceRunProfile` of the voice plugin.
+const pluginVoiceRunProfileRequestSchema = z.object({
+  value: z.enum(["off", "profile", "profile_and_warm"]),
+});
+
+for (const route of [
+  ["get", "Get the voice run profile company setting"],
+  ["put", "Set the voice run profile company setting"],
+  ["delete", "Clear the voice run profile company setting"],
+] as const) {
+  registerCurrentRoute({
+    method: route[0],
+    path: "/api/plugins/{pluginId}/companies/{companyId}/voice-run-profile",
+    tags: ["plugins"],
+    summary: route[1],
+    ...(route[0] === "put" ? { body: pluginVoiceRunProfileRequestSchema } : {}),
+  });
+}
+
 const pluginLocalFolderRequestSchema = z.object({
   path: z.string().min(1),
   access: z.enum(["read", "readWrite"]).optional(),
