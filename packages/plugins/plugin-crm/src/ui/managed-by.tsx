@@ -19,18 +19,18 @@ import {
 
 const muted = { margin: 0, fontSize: 12.5, color: tokens.muted, lineHeight: 1.45 } as const;
 
-/** Member names for the owner or admin who may change the list; null until read or when they cannot be read. */
-function useMemberOptions(companyId: string | null, enabled: boolean): MemberOption[] | null {
+/** Member names; null until read or when they cannot be read (the card then says "A team member"). */
+function useMemberOptions(companyId: string | null): MemberOption[] | null {
   const [members, setMembers] = useState<MemberOption[] | null>(null);
   useEffect(() => {
     setMembers(null);
-    if (!companyId || !enabled) return;
+    if (!companyId) return;
     let live = true;
     fetch(`/api/companies/${encodeURIComponent(companyId)}/members`, { credentials: "include", headers: { accept: "application/json" } })
       .then(async (res) => (res.ok ? parseMembers(await res.json()) : null))
       .then((rows) => { if (live) setMembers(rows); }, () => undefined);
     return () => { live = false; };
-  }, [companyId, enabled]);
+  }, [companyId]);
   return members;
 }
 
@@ -40,7 +40,7 @@ export function ManagedByCard({ companyId, companyRecordId, managers, onSave }: 
   managers: ManagersData;
   onSave: (params: ReturnType<typeof setManagersParams>) => Promise<boolean>;
 }) {
-  const members = useMemberOptions(companyId, managers.canChange);
+  const members = useMemberOptions(companyId);
   const names = new Map((members ?? []).map((m) => [m.userId, m.label]));
   const [draft, setDraft] = useState<ManagersDraft | null>(null);
   const [busy, setBusy] = useState(false);
