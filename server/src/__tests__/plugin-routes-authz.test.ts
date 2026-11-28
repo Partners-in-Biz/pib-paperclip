@@ -8,6 +8,7 @@ const mockRegistry = vi.hoisted(() => ({
   upsertConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
+  mergeCompanySettingsKey: vi.fn(),
 }));
 
 const mockLifecycle = vi.hoisted(() => ({
@@ -535,6 +536,66 @@ describe("plugin local folder routes", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toContain("Local folder key is not declared");
     expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+});
+
+describe("voice run profile company setting route (PAR-15298)", () => {
+  const route = `/api/plugins/${pluginId}/companies/${companyA}/voice-run-profile`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRegistry.getById.mockResolvedValue({
+      id: pluginId, pluginKey: "partnersinbiz.voice", version: "1.0.0", status: "ready", manifestJson: { id: "partnersinbiz.voice" },
+    });
+    mockRegistry.mergeCompanySettingsKey.mockImplementation(async (_plugin, _company, key, value, afterWrite) => {
+      const change = { previous: undefined, row: { settingsJson: value === undefined ? {} : { [key]: value } } };
+      await afterWrite?.({}, change);
+      return change;
+    });
+  });
+
+  it("merges the value for a board member and logs it in the same write", async () => {
+    const { logActivity } = await import("../services/activity-log.js");
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).put(route).send({ value: "profile_and_warm" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ value: "profile_and_warm", previous: null });
+    expect(mockRegistry.mergeCompanySettingsKey).toHaveBeenCalledWith(pluginId, companyA, "voiceRunProfile", "profile_and_warm", expect.any(Function));
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+    expect(logActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: companyA, action: "plugin.voice_run_profile.set", actorType: "user", actorId: "user-1",
+    }), expect.any(Array));
+  });
+
+  it("refuses agents, other companies, invalid values and other plugins without writing", async () => {
+    const attempts: Array<[string, () => request.Test, number]> = [];
+    const agent = await createApp(agentActor());
+    attempts.push(["agent put", () => request(agent.app).put(route).send({ value: "profile" }), 403]);
+    attempts.push(["agent delete", () => request(agent.app).delete(route), 403]);
+    const board = await createApp(boardActor());
+    attempts.push(["other company", () => request(board.app).put(`/api/plugins/${pluginId}/companies/${companyB}/voice-run-profile`).send({ value: "profile" }), 403]);
+    attempts.push(["invalid value", () => request(board.app).put(route).send({ value: "warm" }), 400]);
+    attempts.push(["missing value", () => request(board.app).put(route).send({}), 400]);
+    for (const [name, attempt, status] of attempts) {
+      const res = await attempt();
+      expect(res.status, `${name}: ${JSON.stringify(res.body)}`).toBe(status);
+    }
+    mockRegistry.getById.mockResolvedValue({ id: pluginId, pluginKey: "paperclip.example", version: "1.0.0", status: "ready" });
+    expect((await request(board.app).put(route).send({ value: "profile" })).status).toBe(404);
+    expect(mockRegistry.mergeCompanySettingsKey).not.toHaveBeenCalled();
+  });
+
+  it("a failing settings read is a 500 and logs nothing", async () => {
+    const { logActivity } = await import("../services/activity-log.js");
+    mockRegistry.mergeCompanySettingsKey.mockRejectedValue(new Error("settings read failed"));
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).put(route).send({ value: "profile" });
+
+    expect(res.status).toBe(500);
+    expect(logActivity).not.toHaveBeenCalled();
   });
 });
 
@@ -1234,6 +1295,11 @@ describe("operator-hidden plugin management floor", () => {
           .put(`/api/plugins/${pluginId}/companies/${companyA}/local-folders/data`)
           .send({ path: "/tmp/folder" }),
       ],
+      [
+        "voice run profile",
+        request(app).put(`/api/plugins/${pluginId}/companies/${companyA}/voice-run-profile`).send({ value: "profile" }),
+      ],
+      ["voice run profile clear", request(app).delete(`/api/plugins/${pluginId}/companies/${companyA}/voice-run-profile`)],
     ];
     for (const [name, attempt] of attempts) {
       const res = await attempt;
@@ -1246,6 +1312,7 @@ describe("operator-hidden plugin management floor", () => {
     expect(mockLifecycle.upgrade).not.toHaveBeenCalled();
     expect(mockLifecycle.unload).not.toHaveBeenCalled();
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+    expect(mockRegistry.mergeCompanySettingsKey).not.toHaveBeenCalled();
   });
 
   it("keeps plugin reads open while the surface is hidden", async () => {
