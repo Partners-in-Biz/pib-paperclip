@@ -34,6 +34,21 @@ export function actingRestriction(actor: PluginActingPersonContext | null | unde
   return actor.onBehalfOfRestricted === true ? "restricted" : "unrestricted";
 }
 
+/** The acting person as the host sent it (PAR-12608 4.10, H3). */
+export interface HostActingPerson {
+  /** The person core computed: a run's, a long-lived key's or a connection's. Null: no person. */
+  userId: string | null;
+  /** True only when that person is flagged and the company is on `enforce`. */
+  restricted: boolean;
+}
+
+/** The host's acting person, or null when the host sent no fields (a core older than H3). */
+export function hostActingPerson(actor: PluginActingPersonContext | null | undefined): HostActingPerson | null {
+  if (!actor || typeof actor !== "object" || !("onBehalfOfUserId" in actor)) return null;
+  const v = actor.onBehalfOfUserId;
+  return { userId: typeof v === "string" && v.trim() ? v.trim() : null, restricted: actor.onBehalfOfRestricted === true };
+}
+
 /** Run statuses that are still going (core `HEARTBEAT_RUN_STATUSES`). Any other status has ended. */
 export const LIVE_RUN_STATUSES: readonly string[] = Object.freeze(["queued", "scheduled_retry", "running"]);
 

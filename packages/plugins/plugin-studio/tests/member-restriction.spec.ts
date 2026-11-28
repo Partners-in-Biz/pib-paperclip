@@ -5,7 +5,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { actingRestriction, MEMBER_RESTRICTED, MEMBER_RESTRICTION_UNAVAILABLE } from "@partnersinbiz/pib-plugin-kit";
+import { accessCompanyScope, actingRestriction, MEMBER_RESTRICTED, MEMBER_RESTRICTION_UNAVAILABLE } from "@partnersinbiz/pib-plugin-kit";
 import manifest from "../src/manifest.js";
 import { PAGE_MODELS } from "../src/page.js";
 import plugin from "../src/worker.js";
@@ -122,6 +122,8 @@ async function studio(only?: ClientSource) {
   };
   const configReads = vi.spyOn(harness.ctx.config, "get");
   await plugin.definition.setup(harness.ctx);
+  // Setup's access row is stored (off): with none, the guard refuses a restricted member before Studio's own rules (H3a).
+  await harness.ctx.state.set(accessCompanyScope(CO), { mode: "off", rev: 1, userIds: [], receivedAt: new Date().toISOString() });
   configReads.mockClear();
   // Drive, brand kit and Social all go out over the event bus: a refused call must emit nothing.
   const emit = vi.spyOn(harness.ctx.events, "emit");

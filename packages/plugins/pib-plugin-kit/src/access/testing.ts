@@ -31,6 +31,11 @@
  * 6. API routes under `enforce`: the owner and an agent on the owner's run pass;
  *    the operator and an agent on his run are refused; an unknown route key is
  *    refused.
+ * 7. The acting person from the host (PAR-12608 4.10, H3): with the switch
+ *    absent, a person core marks restricted is refused on every action, tool and
+ *    route (not in Setup, which always has its own row). Under `enforce` a tool takes the host's person over the run it names
+ *    (a key with no run and the owner passes; the owner's run sent for an
+ *    operator is held to the operator); no person on the call is refused.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -211,7 +216,9 @@ const short = (v: unknown) => {
 };
 
 type Kind = "action" | "tool" | "route";
-type Who = { user: string } | { run: string };
+/** What core sends as the acting person (H3); left out, the call is from a core older than H3. */
+type HostPerson = { onBehalfOfUserId: string | null; onBehalfOfRestricted: boolean };
+type Who = ({ user: string } | { run: string }) & { as?: HostPerson };
 type Outcome = { reached: true } | { reached: false; refused: boolean; got: string };
 
 /** Items 4 to 6 on the set-up harness. Each problem is one readable line. */
@@ -266,11 +273,11 @@ export async function behaviourProblems(input: PluginAccessCheckInput & { harnes
     let result: unknown;
     try {
       if (kind === "action") {
-        result = await harness.performAction(name, {}, { companyId, actor: { type: "user", userId: "user" in who ? who.user : null } });
+        result = await harness.performAction(name, {}, { companyId, actor: { type: "user", userId: "user" in who ? who.user : null, ...who.as } });
       } else if (kind === "tool") {
-        result = await harness.executeTool(name, {}, { agentId: T.agent, runId: "run" in who ? who.run : "", companyId });
+        result = await harness.executeTool(name, {}, { agentId: T.agent, runId: "run" in who ? who.run : "", companyId, ...who.as });
       } else {
-        const actor = "user" in who ? { actorType: "user" as const, actorId: who.user, userId: who.user } : { actorType: "agent" as const, actorId: T.agent, agentId: T.agent, runId: who.run };
+        const actor = { ...("user" in who ? { actorType: "user" as const, actorId: who.user, userId: who.user } : { actorType: "agent" as const, actorId: T.agent, agentId: T.agent, runId: who.run }), ...who.as };
         result = await onApiRequest!({ routeKey: name, method: "GET", path: `/${name}`, params: {}, query: {}, body: null, actor, companyId, headers: {} });
       }
     } catch (error) {
@@ -332,6 +339,19 @@ export async function behaviourProblems(input: PluginAccessCheckInput & { harnes
       await expectCall(`API route "${r}", enforce, agent on a run working for an operator with no grant`, noGrant(`api:${r}`), "route", r, E, run(T.runOperator));
     }
     if (onApiRequest) await expectCall("unknown API route key, enforce, owner", "refuse", "route", "access-check-unknown-route", E, user(T.owner));
+    const as = (person: string | null, restricted = false) => ({ as: { onBehalfOfUserId: person, onBehalfOfRestricted: restricted } });
+    const marked = as(T.operator, true);
+    // Setup is the source of the row and always has one ("nothing saved" is `off` at rev 0), so it has no absent switch.
+    const absent = manifest.id === SETUP_PLUGIN ? null : T.absent;
+    if (absent) for (const a of actions) await expectCall(`action "${a}", switch absent, operator marked restricted by core`, "refuse", "action", a, absent, { ...user(T.operator), ...marked });
+    if (absent) for (const r of askRoutes) await expectCall(`API route "${r}", switch absent, operator marked restricted by core`, "refuse", "route", r, absent, { ...user(T.operator), ...marked });
+    for (const t of tools) {
+      if (absent) await expectCall(`tool "${t}", switch absent, run for an operator marked restricted by core`, "refuse", "tool", t, absent, { ...run(T.runOperator), ...marked });
+      await expectCall(`tool "${t}", enforce, agent key with no run working for the owner (host's person)`, "pass", "tool", t, E, { ...run(""), ...as(T.owner) });
+      await expectCall(`tool "${t}", enforce, the owner's run sent for an operator with no grant (host's person)`, noGrant(`tool:${t}`), "tool", t, E, { ...run(T.runOwner), ...as(T.operator) });
+      await expectCall(`tool "${t}", enforce, the owner's run sent with no person (host's person)`, "refuse", "tool", t, E, { ...run(T.runOwner), ...as(null) });
+    }
+    for (const r of askRoutes) await expectCall(`API route "${r}", enforce, agent key with no run working for the owner (host's person)`, "pass", "route", r, E, { ...run(""), ...as(T.owner) });
     if (manifest.id !== SETUP_PLUGIN && rec.events.includes(ACCESS_UPDATED_EVENT)) problems.push(...(await receiveProblems(harness, manifest.id)));
   } finally {
     guardProbes().delete(manifest.id);

@@ -238,3 +238,27 @@ describe("PLUGIN_AREAS", () => {
     expect([...new Set(PERMISSION_CATALOG.map((r) => r.area))].sort()).toEqual([...owned].sort());
   });
 });
+
+describe("acting person from the host on a route and in access.me (H3)", () => {
+  const host = (onBehalfOfUserId: string | null, onBehalfOfRestricted = false) => ({ onBehalfOfUserId, onBehalfOfRestricted });
+
+  it("routeCaller keeps the host's person; an agent route is decided by it, with no run lookup", async () => {
+    expect(routeCaller({ ...agentA(null), ...host("op") } as never).onBehalfOf).toEqual({ userId: "op", restricted: false });
+    const f = fake("enforce");
+    f.member("own", "owner");
+    f.member("op", "operator");
+    f.setRun({ responsible_user_id: "own", status: "running" });
+    expect(refused(await f.route("report", { ...agentA(), ...host("op") }))).toBe(true);
+    expect(await f.route("report", { ...agentA(null), ...host("own") })).toEqual(ok);
+    expect(refused(await f.route("report", { ...agentA(), ...host(null) }))).toBe(true);
+    expect(f.n.runs).toBe(0);
+  });
+
+  it("restricted mark and no company row: the route refuses and access.me is closed; the unmarked are open", async () => {
+    const f = fake(null);
+    expect(refused(await f.route("report", { ...userA("r"), ...host("r", true) }))).toBe(true);
+    expect(await f.me({ type: "user", userId: "r", ...host("r", true) })).toEqual({ mode: "off", open: false, permissions: [] });
+    expect(await f.route("report", { ...userA("o"), ...host("o") })).toEqual(ok);
+    expect(await f.me({ type: "user", userId: "o", ...host("o") })).toMatchObject({ mode: "off", open: true });
+  });
+});

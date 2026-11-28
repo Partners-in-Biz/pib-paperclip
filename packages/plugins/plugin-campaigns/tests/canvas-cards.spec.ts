@@ -117,6 +117,10 @@ describe("Campaigns card for callers the page closes", () => {
   it("a restricted member gets hidden and empty answers", async () => {
     const { harness } = await boot({ store: seeded() });
     const who = person("user-restricted", true);
+    // H3a: with no access row in this plugin, the guard refuses him before the card helper is asked.
+    expect(await harness.performAction(RESOLVE, { items: [{ type: CAMPAIGN_CARD, id: "news-1" }] }, who)).toMatchObject({ ok: false, code: PERMISSION_DENIED });
+    // With Setup's row stored (off), the card helper answers hidden and empty.
+    await harness.ctx.state.set(accessCompanyScope(CO), { mode: "off", rev: 1, userIds: [], receivedAt: new Date().toISOString() });
     expect(await harness.performAction(RESOLVE, { items: [{ type: CAMPAIGN_CARD, id: "news-1" }] }, who)).toEqual({ cards: [{ type: CAMPAIGN_CARD, id: "news-1", hidden: true }] });
     expect(await harness.performAction(SEARCH, { type: CAMPAIGN_CARD, q: "" }, who)).toEqual({ cards: [] });
     expect(await harness.performAction(RELATED, { of: { plugin: CRM, type: "card-company", id: "acme" } }, who)).toEqual({ groups: [] });

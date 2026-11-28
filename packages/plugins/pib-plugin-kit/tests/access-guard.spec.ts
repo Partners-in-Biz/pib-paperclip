@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PluginContext, ToolResult } from "@paperclipai/plugin-sdk";
-import { ADMIN_ONLY, ANY_MEMBER, createAccessGuard, type AccessCheck, type AccessTable } from "../src/access/guard.js";
+import { ADMIN_ONLY, ANY_MEMBER, actionCaller, createAccessGuard, toolCaller, type AccessCheck, type AccessTable } from "../src/access/guard.js";
 import { isRefusal } from "../src/access/refusal.js";
 import { noteAccessReceived } from "../src/access/cache.js";
 import { GROWTH_TOOL_NAMES, registerGrowthTools, type GrowthToolsHost } from "../src/growth/tools.js";
@@ -187,3 +187,82 @@ describe("registration", () => {
   });
 });
 
+
+/** The acting person core sends (PAR-12608 4.10, H3). */
+const host = (onBehalfOfUserId: string | null, onBehalfOfRestricted = false) => ({ onBehalfOfUserId, onBehalfOfRestricted });
+
+describe("acting person from the host (H3)", () => {
+  it("the callers carry it only when the host sent it, and never on the host itself", () => {
+    expect(actionCaller({ actor: { ...agent(), ...host("own", true) } } as never).onBehalfOf).toEqual({ userId: "own", restricted: true });
+    expect(actionCaller({ actor: agent() } as never)).not.toHaveProperty("onBehalfOf");
+    expect(actionCaller({ actor: { type: "system", ...host("own") } } as never)).not.toHaveProperty("onBehalfOf");
+    expect(toolCaller({ agentId: AGENT, runId: "", companyId: CO, projectId: "", ...host(" key-person ") }).onBehalfOf).toEqual({ userId: "key-person", restricted: false });
+  });
+
+  it("agent: decided by the host's person with no run lookup; a run id is not trusted over it", async () => {
+    const f = fake("enforce");
+    f.member("own", "owner");
+    f.member("bare", "operator");
+    // The run named in the call works for the owner; the host says the call works for "bare".
+    f.setRun({ responsible_user_id: "own", status: "running" });
+    expect(refused(await f.act("view", { ...agent(), ...host("bare") }))).toBe(true);
+    expect(toolRefused(await f.tool(host("bare")))).toBe(true);
+    expect(await f.act("view", { ...agent(), ...host("own") })).toEqual({ done: "view" });
+    expect(f.n.runs).toBe(0);
+  });
+
+  it("agent key with no run: takes the key's person instead of a refusal", async () => {
+    const f = fake("enforce");
+    f.member("own", "owner");
+    f.member("op", "operator", ALLOW_VIEW);
+    expect(await f.act("view", { ...agent(null), ...host("op") })).toEqual({ done: "view" });
+    expect(await f.tool({ runId: "", ...host("own") })).toEqual({ content: "looked" });
+    expect(f.seen.at(-1)?.caller.onBehalfOf).toEqual({ userId: "own", restricted: false });
+    expect(f.n.runs).toBe(0);
+  });
+
+  it("agent with no run, and a run with no person, are still refused with the fields (AC-H6)", async () => {
+    const f = fake("enforce");
+    f.member("own", "owner");
+    f.setRun({ responsible_user_id: "own", status: "running" });
+    expect(refused(await f.act("view", { ...agent(null), ...host(null) }))).toBe(true);
+    expect(refused(await f.act("view", { ...agent(), ...host(null) }))).toBe(true);
+    const noRun = await f.tool({ runId: "", ...host(null) });
+    expect(noRun.error).toContain("This agent call has no run");
+    const noPerson = await f.tool(host(null));
+    expect(noPerson.error).toContain("The run of this call names no person");
+    expect(f.n.runs).toBe(0);
+  });
+
+  it("a person keeps his own id; the local board still passes with the host's null", async () => {
+    const f = fake("enforce");
+    f.member("bare", "operator");
+    expect(refused(await f.act("view", { ...user("bare"), ...host("bare") }))).toBe(true);
+    expect(await f.act("admin", { ...user("local-board"), ...host(null) })).toEqual({ done: "admin" });
+  });
+
+  it("restricted mark and no company row: refused and reported; the same plugin passes the unmarked (AC-H3a)", async () => {
+    const f = fake(null);
+    expect(refused(await f.act("view", { ...user("r"), ...host("r", true) }))).toBe(true);
+    expect(toolRefused(await f.tool(host("r", true)))).toBe(true);
+    expect(f.emitted.filter((e) => e.name === "access.refusal").map((e) => e.payload)).toEqual([
+      { companyId: CO, pluginKey: PLUGIN, userId: "r", key: "view", permission: null, viaAgentId: null },
+      { companyId: CO, pluginKey: PLUGIN, userId: "r", key: "tool:look", permission: null, viaAgentId: AGENT },
+    ]);
+    for (const who of ["o", "u"]) {
+      expect(await f.act("view", { ...user(who), ...host(who) })).toEqual({ done: "view" });
+      expect(await f.tool(host(who))).toEqual({ content: "looked" });
+    }
+    expect(await f.act("view", user("old-core"))).toEqual({ done: "view" }); // no fields: stage A
+    expect(f.n).toEqual({ members: 0, runs: 0 });
+  });
+
+  it("restricted mark with a row: the row decides, as for everyone (off passes)", async () => {
+    const off = fake("off");
+    expect(await off.act("view", { ...user("r"), ...host("r", true) })).toEqual({ done: "view" });
+    const enf = fake("enforce");
+    enf.member("r", "operator", ALLOW_VIEW);
+    expect(await enf.act("view", { ...user("r"), ...host("r", true) })).toEqual({ done: "view" });
+    expect(refused(await enf.act("admin", { ...user("r"), ...host("r", true) }))).toBe(true);
+  });
+});
