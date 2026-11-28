@@ -32,7 +32,7 @@ import { messageKey, MESSAGE_KEY_PREFIX, RecipientRefused, scrubSettledBody, sen
 import { PLUGIN_ID } from "./namespace.js";
 import { executeApprovedErasure, redactErasureApproval } from "./privacy.js";
 import { reportEmailProblem, reportHooks } from "./report.js";
-import { teamAssignee } from "./routing.js";
+import { clientManagerApprover, teamAssignee } from "./routing.js";
 import { decideReportCard, isReportBatch, type BatchActions } from "./report-batch.js";
 import { speedToLeadHooks } from "./speed-to-lead.js";
 import { feedbackHooks, onFeedbackReply } from "./support.js";
@@ -83,7 +83,8 @@ export async function onCareApprovalIssue(ctx: PluginContext, event: PluginEvent
   const payload = (event.payload ?? {}) as { agentId?: unknown; runId?: unknown };
   const byAgentSession = Boolean(payload.agentId) || Boolean(payload.runId);
   if (event.actorType !== "user" || byAgentSession) {
-    const reopened = await reopenApprovalForPerson(ctx, { issueId: event.entityId, companyId: event.companyId, what: String(approval.payload.title ?? "a client approval") });
+    const managerUserId = await clientManagerApprover(ctx, event.companyId, approval.kind, approval.client);
+    const reopened = await reopenApprovalForPerson(ctx, { issueId: event.entityId, companyId: event.companyId, userId: managerUserId, what: String(approval.payload.title ?? "a client approval") });
     if (!reopened) ctx.logger.info("A client approval closed by an agent could not be reopened", { approvalId: approval.id, actorType: event.actorType ?? null });
     return true;
   }

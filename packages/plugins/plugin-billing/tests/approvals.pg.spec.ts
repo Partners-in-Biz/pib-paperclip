@@ -6,7 +6,7 @@
  * Billing's settings name wins over the owner.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { forgetCompanyDefaultOwner } from "@partnersinbiz/pib-plugin-kit";
+import { accessCompanyScope, accessGrantScope, forgetCompanyDefaultOwner } from "@partnersinbiz/pib-plugin-kit";
 import plugin from "../src/worker.js";
 import { openBillingApproval, configuredApprover } from "../src/approvals.js";
 import { agentContext, COMPANY, embeddedAvailable, seedClient, SETTINGS, startHarness, userContext, type Harness } from "./helpers/harness.js";
@@ -176,5 +176,37 @@ describe.skipIf(!available)("billing approvals (postgres)", () => {
     await roles({});
     const issue = await sendRequest();
     expect((issue as { projectId?: string }).projectId ?? null).toBeNull();
+  });
+
+  it("stage B-D7 pin: on enforce, a client managed by a limited member still goes to today's approver (Billing is a hard stop)", async () => {
+    // Peet 2026-11-17: invoices, quotes, payments, credit and prices stay with him even on a limited person's own companies.
+    // Billing never asks the CRM who manages a client for an approval; when B-4 adds managers to the copy, seed Jan there too.
+    await roles({ reviewerAgentId: "agent-rev", reviewerStatus: "idle", reviewOutward: true });
+    await h.ctx.state.set(accessCompanyScope(COMPANY), { mode: "enforce", rev: 1, userIds: [], receivedAt: new Date().toISOString() });
+    await h.ctx.state.set(accessGrantScope(COMPANY, "user-jan"), { preset: "clientManager" });
+    const ctx = h.ctx as unknown as { access?: unknown };
+    const access = ctx.access;
+    ctx.access = { members: { list: async () => [
+      { principalType: "user", principalId: "owner-1", status: "active", membershipRole: "owner" },
+      { principalType: "user", principalId: "user-jan", status: "active", membershipRole: "member" },
+    ] } };
+    try {
+      const client = { kind: "contact" as const, id: "ct-lumen" };
+      const base = { companyId: COMPANY, description: "d", client, actorUserId: "user-jan" };
+      // Money decisions: a person decides, and that person is the owner, not the client's manager.
+      for (const originId of ["payment:p1", "credit-note:c1", "payment-check:i1"]) {
+        const money = await openBillingApproval(h.ctx, { ...SETTINGS } as never, { ...base, title: "Approve", originId, outward: false });
+        expect(h.issues.get(money.id)).toMatchObject({ assigneeUserId: "owner-1", assigneeAgentId: null });
+        expect(money.approver).toBe("owner-1");
+      }
+      // Sends: the Reviewer first, handing on to the owner.
+      const send = await openBillingApproval(h.ctx, { ...SETTINGS } as never, { ...base, title: "Send invoice", originId: "invoice-send:i1", outward: true });
+      expect(send).toMatchObject({ reviewer: true, approver: "owner-1" });
+      // Billing's own configured approver still wins.
+      const configured = await openBillingApproval(h.ctx, { ...SETTINGS, reviewerUserId: "user-9" } as never, { ...base, title: "Approve", originId: "payment:p2", outward: false });
+      expect(h.issues.get(configured.id)).toMatchObject({ assigneeUserId: "user-9" });
+    } finally {
+      ctx.access = access;
+    }
   });
 });
