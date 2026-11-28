@@ -8158,6 +8158,19 @@ export function agentRoutes(
       res.json(null);
       return;
     }
+    // PAR-12608 4.6, AC-G5 (PAR-15227): a caller bound by a restricted person
+    // sees the active run only when it works for him.
+    const workingFor = await restrictedRunPersonForActor(db, req.actor, issue.companyId);
+    if (workingFor !== null) {
+      const [owner] = workingFor === false ? [] : await db
+        .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, issue.companyId)));
+      if (!owner || owner.responsibleUserId !== workingFor) {
+        res.json(null);
+        return;
+      }
+    }
 
     const agent = await svc.getById(run.agentId);
     if (!agent) {
