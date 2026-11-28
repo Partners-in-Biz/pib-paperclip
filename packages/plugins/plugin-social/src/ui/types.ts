@@ -219,6 +219,10 @@ export interface Snapshot {
   /** Own page: the weekly plan routine and its last trigger report (null until the agent is linked). */
   routine?: WeeklyRoutineRef | null;
   viewer: { userId: string | null };
+  /** Only for a limited person (access stage B2): his clients, by name. */
+  clients?: Array<{ client: string; name: string }>;
+  /** Only for a limited person: the client shown and his clients' keys, read with `readLimitedTo`. */
+  limitedTo?: { client: string; clients: string[] };
 }
 
 export interface WeeklyRoutineRef {

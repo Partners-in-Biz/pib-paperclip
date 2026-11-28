@@ -140,6 +140,8 @@ export type LoadResult = {
   client: ScopeClient | null;
   clientError: string | null;
   sprints: SprintSummary[];
+  /** Only for a limited person (access stage B2): the client shown and his clients, read with `readLimitedTo`. */
+  limitedTo?: { client: string; clients: Array<{ client: string; name: string }> };
 };
 
 export type Task = {

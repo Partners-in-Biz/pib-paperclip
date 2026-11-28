@@ -155,6 +155,8 @@ export interface Overview {
   audit: AuditEntry[];
   agent: { agentId: string | null; name: string | null; status: string | null; active: boolean };
   clients: Record<string, string>;
+  /** Only for a limited person (access stage B2): the scope shown and his scopes, read with `readLimitedTo`. */
+  limitedTo?: { scopeKey: string; scopeKeys: string[] };
   redirectUri: string | null;
   publicBaseUrlError: string | null;
   encryptionKey: boolean;

@@ -22,6 +22,9 @@ import { tokens, tone, type ToneInput } from "./tokens.js";
 import { useUiContributions, type UiContribution } from "./nav.js";
 import { HelpBannerSlot } from "./help-banner.js";
 import { SEARCHABLE_SELECT_THRESHOLD, SearchableSelect, flattenOptions } from "./searchable-select.js";
+import { unnamedClient, type LimitedTo } from "./limited-to.js";
+
+export { readLimitedTo, unnamedClient, type LimitedClient, type LimitedClientNames, type LimitedTo } from "./limited-to.js";
 
 export { SEARCHABLE_SELECT_THRESHOLD, filterOptions, flattenOptions } from "./searchable-select.js";
 
@@ -437,8 +440,11 @@ export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabe
   client: { kind: "company" | "contact"; id: string; name: string; detail?: string | null };
   active: ClientWorkspaceTab;
   linkProps: LinkPropsFn;
-  /** Where the back link goes, e.g. `/social`. Defaults to the active tab's page without a client. */
-  ownPath?: string;
+  /**
+   * Where the back link goes, e.g. `/social`. Defaults to the active tab's page without a client. `null` leaves the
+   * back link out: a limited person (access stage B2) has no company-wide page to go back to.
+   */
+  ownPath?: string | null;
   /** Back link text; defaults to "All clients" on the CRM and "Our own <module>" elsewhere. */
   ownLabel?: string;
   actions?: ReactNode;
@@ -446,7 +452,7 @@ export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabe
   const workspaceAccent = useResolvedAccent();
   const param = encodeURIComponent(`${client.kind}:${client.id}`);
   const activePath = CLIENT_WORKSPACE_TABS.find((tab) => tab.id === active)?.path ?? "/crm";
-  const own = linkProps(ownPath ?? (active === "overview" ? "/crm" : activePath));
+  const own = ownPath === null ? null : linkProps(ownPath ?? (active === "overview" ? "/crm" : activePath));
   const contributions = useUiContributions();
   const tabs = installedWorkspaceTabs(contributions, active);
   const activeLabel = CLIENT_WORKSPACE_TABS.find((tab) => tab.id === active)?.label ?? "work";
@@ -456,9 +462,11 @@ export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabe
   const initials = client.name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]!.toUpperCase()).join("") || "?";
   return (
     <header style={{ display: "grid", gridTemplateColumns: oneColumn, gap: 14, minWidth: 0 }}>
-      <a {...own} style={{ fontSize: 12.5, color: tokens.muted, textDecoration: "none", width: "fit-content", minHeight: narrow ? 40 : 24, display: "inline-flex", alignItems: "center" }}>
-        ← {backLabel}
-      </a>
+      {own ? (
+        <a {...own} style={{ fontSize: 12.5, color: tokens.muted, textDecoration: "none", width: "fit-content", minHeight: narrow ? 40 : 24, display: "inline-flex", alignItems: "center" }}>
+          ← {backLabel}
+        </a>
+      ) : null}
       <div style={{ display: "flex", gap: 14, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 12, alignItems: "center", minWidth: 0, flex: "1 1 260px" }}>
           <span aria-hidden="true" style={{ width: 40, height: 40, borderRadius: client.kind === "contact" ? 999 : 10, display: "grid", placeItems: "center", background: tokens.secondary, color: tokens.secondaryFg, fontWeight: 650, fontSize: 14, flexShrink: 0 }}>
@@ -505,6 +513,40 @@ export function ClientWorkspaceBar({ client, active, linkProps, ownPath, ownLabe
         })}
       </nav>
     </header>
+  );
+}
+
+/**
+ * The client picker for a limited person (access stage B2, PAR-15212): he works on one of his own companies at a
+ * time. Pass the page load's `limitedTo` read with `readLimitedTo`; render nothing when that is null. With one
+ * company it names it; with more, a select that calls `onPick` with the chosen `company:<id>` / `contact:<id>`.
+ */
+export function LimitedClientPicker({ limitedTo, onPick, disabled }: { limitedTo: LimitedTo; onPick: (client: string) => void; disabled?: boolean }) {
+  usePibBaseStyles();
+  const id = useId();
+  const current = limitedTo.clients.find((c) => c.client === limitedTo.client);
+  const many = limitedTo.clients.length > 1;
+  return (
+    <section
+      aria-label="Your companies"
+      style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderRadius: 12, background: tokens.secondary, minWidth: 0 }}
+    >
+      <p style={{ margin: 0, fontSize: 13, lineHeight: 1.45, color: tokens.muted, flex: "1 1 240px", minWidth: 0, overflowWrap: "anywhere" }}>
+        {many ? "You work on your own companies, one at a time. Pick the one to open." : "You work on your own company only."}
+      </p>
+      {many ? (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flex: "1 1 240px", maxWidth: "100%", minWidth: 0 }}>
+          <label htmlFor={id} style={{ fontSize: 12, fontWeight: 500, color: tokens.muted, flexShrink: 0 }}>Company</label>
+          <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+            <Select id={id} value={limitedTo.client} disabled={disabled} onChange={(event) => { if (event.target.value !== limitedTo.client) onPick(event.target.value); }}>
+              {limitedTo.clients.map((c) => <option key={c.client} value={c.client}>{c.name}</option>)}
+            </Select>
+          </div>
+        </div>
+      ) : (
+        <strong style={{ fontSize: 13, fontWeight: 600, color: tokens.fg, minWidth: 0, overflowWrap: "anywhere" }}>{current?.name ?? unnamedClient(limitedTo.client)}</strong>
+      )}
+    </section>
   );
 }
 

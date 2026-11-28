@@ -19,6 +19,7 @@ import {
   Input,
   KpiCard,
   LayoutDashboard,
+  LimitedClientPicker,
   Modal,
   Page,
   PageFrame,
@@ -36,13 +37,14 @@ import {
   TriangleAlert,
   errorText,
   fluidColumns,
+  readLimitedTo,
   tokens,
   tone,
   useIsNarrow,
 } from "@partnersinbiz/pib-plugin-ui";
 import { AccessGate, GetStarted, useAccess, useGroupedNav, usePluginSetupStatus, useUrlTab } from "@partnersinbiz/pib-plugin-ui";
 import { useAccessMe, useCampaignsAction } from "./actions.js";
-import { clientScopeFromSearch, formatClientParam, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
+import { clientScopeFromSearch, formatClientParam, parseClientParam, withClientParam, type ClientKind, type ClientScope } from "@partnersinbiz/pib-plugin-kit/client-ref";
 import { resolvePluginUiBase } from "@partnersinbiz/pib-plugin-kit/oauth-client";
 import { ModuleOffBanner, useModuleEnabled } from "./module-switch.js";
 import type { CampaignSeries } from "../series.js";
@@ -118,6 +120,8 @@ interface Snapshot {
   brandsUnread?: boolean;
   /** In a client workspace: this client is one of our own brands. */
   ownBrand?: boolean;
+  /** Only for a limited person (access stage B2): the client shown and his clients, read with `readLimitedTo`. */
+  limitedTo?: { client: string; clients: Array<{ client: string; name: string }> };
 }
 type TabId = "overview" | "campaigns" | "review" | "preferences";
 type CreateKind = "campaign" | "step" | "ab" | null;
@@ -137,10 +141,11 @@ function withParam(search: string, key: string, value: string | null): string {
 }
 
 /** Page layout for a client workspace: the shared client bar replaces the page header. */
-function WorkspacePage({ header, message, children }: { header: ReactNode; message?: string; children: ReactNode }) {
+function WorkspacePage({ header, picker, message, children }: { header: ReactNode; picker?: ReactNode; message?: string; children: ReactNode }) {
   return (
     <PageFrame accent="campaigns">
       {header}
+      {picker}
       <PageMessage message={message} />
       {children}
     </PageFrame>
@@ -296,6 +301,15 @@ function CampaignsPageBody({ context }: PluginPageProps) {
   async function refresh() {
     setSnapshot((await load({ client: scope, uiBase: await resolvePluginUiBase(PLUGIN_ID, import.meta.url) })) as Snapshot);
   }
+  // A limited person (access stage B2) works in one of his clients' workspaces at a time: the load opens his first
+  // when the page names none, and the address follows it, so the header, tabs and new campaigns are that client's.
+  const limitedTo = useMemo(() => readLimitedTo(snapshot?.limitedTo), [snapshot]);
+  const openClient = (client: string) => navigation.navigate(withClientParam("/campaigns", parseClientParam(client)), { replace: !scope });
+  useEffect(() => {
+    if (limitedTo && !scope && !openId) openClient(limitedTo.client);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [limitedTo, scopeKey, openId]);
+
   async function refreshDetail(id: string | null = openId) {
     setDetail(id ? ((await loadDetail({ campaignId: id })) as CampaignDetailData) : null);
   }
@@ -576,7 +590,8 @@ function CampaignsPageBody({ context }: PluginPageProps) {
                   ? `${clientName} is one of our own brands. Its campaigns go out as ${clientName}, keep their own do-not-email list, and are approved like our own campaigns.`
                   : `${clientName} is a client: its campaigns need the client's written yes and your approval.`}
               </span>
-              <Button
+              {/* Closed to a limited person (own brands are company-wide): the worker refuses it, so the page leaves it out. */}
+              {limitedTo ? null : <Button
                 type="button"
                 variant="secondary"
                 style={{ height: 28, fontSize: 12.5 }}
@@ -591,7 +606,7 @@ function CampaignsPageBody({ context }: PluginPageProps) {
                 }}
               >
                 {snapshot.ownBrand ? "Not one of ours" : "Mark as one of our own brands"}
-              </Button>
+              </Button>}
             </p>
           ) : null}
           <NeedsAttention campaigns={everything} brandOf={(id) => brandGroups.find((group) => group.campaigns.some((campaign) => campaign.id === id))?.client.name ?? null} onOpen={openCampaign} />
@@ -806,10 +821,11 @@ function CampaignsPageBody({ context }: PluginPageProps) {
             client={{ kind: scope.kind, id: scope.id, name: barName, detail: client?.detail ?? null }}
             active="campaigns"
             linkProps={navigation.linkProps}
-            ownPath="/campaigns"
+            ownPath={limitedTo ? null : "/campaigns"}
             actions={headerAction}
           />
         )}
+        picker={limitedTo ? <LimitedClientPicker limitedTo={limitedTo} disabled={busy} onPick={openClient} /> : null}
         message={pageMessage}
       >
         {body}

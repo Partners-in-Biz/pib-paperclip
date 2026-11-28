@@ -1,0 +1,269 @@
+{
+  "space": "company",
+  "scope": "company:acme",
+  "client": {
+    "kind": "company",
+    "id": "acme",
+    "name": "Acme Ltd",
+    "domain": null,
+    "email": null,
+    "lifecycle": null,
+    "client": "company:acme"
+  },
+  "config": {
+    "saved": true,
+    "publicBaseUrl": "https://paperclip.example.test",
+    "publicBaseUrlError": null,
+    "redirectUri": null,
+    "encryptionKey": false,
+    "r2": false,
+    "timezone": "Africa/Johannesburg",
+    "allowAgentReplies": false,
+    "blueskyDefaultPds": "https://bsky.social",
+    "mastodonDefaultInstance": null,
+    "linkedinPagesConfigured": false,
+    "jev": false
+  },
+  "platforms": [
+    {
+      "platform": "facebook",
+      "label": "Facebook",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.facebook.clientId",
+        "platforms.facebook.clientSecret"
+      ]
+    },
+    {
+      "platform": "instagram",
+      "label": "Instagram",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.instagram.clientId",
+        "platforms.instagram.clientSecret"
+      ]
+    },
+    {
+      "platform": "threads",
+      "label": "Threads",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.threads.clientId",
+        "platforms.threads.clientSecret"
+      ]
+    },
+    {
+      "platform": "linkedin",
+      "label": "LinkedIn",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.linkedin.clientId",
+        "platforms.linkedin.clientSecret"
+      ]
+    },
+    {
+      "platform": "x",
+      "label": "X",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.x.clientId",
+        "platforms.x.clientSecret"
+      ]
+    },
+    {
+      "platform": "tiktok",
+      "label": "TikTok",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.tiktok.clientId",
+        "platforms.tiktok.clientSecret"
+      ]
+    },
+    {
+      "platform": "youtube",
+      "label": "YouTube",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.youtube.clientId",
+        "platforms.youtube.clientSecret"
+      ]
+    },
+    {
+      "platform": "pinterest",
+      "label": "Pinterest",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.pinterest.clientId",
+        "platforms.pinterest.clientSecret"
+      ]
+    },
+    {
+      "platform": "reddit",
+      "label": "Reddit",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.reddit.clientId",
+        "platforms.reddit.clientSecret"
+      ]
+    },
+    {
+      "platform": "bluesky",
+      "label": "Bluesky",
+      "mode": "credentials",
+      "configured": true,
+      "missing": []
+    },
+    {
+      "platform": "mastodon",
+      "label": "Mastodon",
+      "mode": "instance",
+      "configured": true,
+      "missing": []
+    },
+    {
+      "platform": "dribbble",
+      "label": "Dribbble",
+      "mode": "oauth",
+      "configured": false,
+      "missing": [
+        "platforms.dribbble.clientId",
+        "platforms.dribbble.clientSecret"
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "id": "25d0d292-7e89-48f2-88e3-518f10f30476",
+      "platform": "linkedin",
+      "scope": "org",
+      "ownerUserId": null,
+      "status": "connected",
+      "displayName": "acme",
+      "handle": "acme",
+      "externalId": "manual:acme",
+      "avatarUrl": null,
+      "connected": true,
+      "manual": true,
+      "tokenExpiresAt": null,
+      "lastRefreshedAt": null,
+      "lastError": null,
+      "client": "company:acme",
+      "clientKind": "company",
+      "clientRef": "acme",
+      "clientName": "Acme Ltd",
+      "kind": null,
+      "via": null,
+      "boardId": null,
+      "boardName": null,
+      "defaultSubreddit": null,
+      "instanceUrl": null,
+      "pageName": null,
+      "scopes": [],
+      "reconnectIssueId": null
+    }
+  ],
+  "posts": [
+    {
+      "id": "acme-post",
+      "body": "Spring post acme-post",
+      "status": "draft",
+      "scope": "org",
+      "ownerUserId": null,
+      "scheduledAt": null,
+      "publishedAt": null,
+      "client": "company:acme",
+      "clientKind": "company",
+      "clientRef": "acme",
+      "clientName": "Acme Ltd",
+      "firstComment": null,
+      "replyTo": null,
+      "quote": null,
+      "note": null,
+      "media": [],
+      "overrides": {},
+      "source": "agent",
+      "handoffKey": null,
+      "experimentId": null,
+      "experimentArm": null,
+      "scheduleIssueId": null,
+      "error": null,
+      "failureIssueId": null,
+      "createdAt": "2026-11-28T06:21:13.123Z",
+      "updatedAt": "2026-11-28T06:21:13.123Z",
+      "destinations": []
+    }
+  ],
+  "templates": [],
+  "media": [],
+  "feeds": [],
+  "inbox": [
+    {
+      "id": "acme-item",
+      "accountId": null,
+      "platform": null,
+      "kind": "comment",
+      "author": "someone",
+      "body": "Nice",
+      "status": "new",
+      "permalink": null,
+      "externalId": null,
+      "postId": null,
+      "replyDraft": null,
+      "replyBody": null,
+      "repliedAt": null,
+      "receivedAt": "2026-11-28T06:21:13.130Z",
+      "client": "company:acme",
+      "clientKind": "company",
+      "clientRef": "acme",
+      "clientName": "Acme Ltd",
+      "canReply": false,
+      "triage": null
+    }
+  ],
+  "experiments": [],
+  "stats": {
+    "days": 28,
+    "publishedPerDay": [],
+    "destinationStatus": {},
+    "liftPerWeek": []
+  },
+  "approvalPolicy": {
+    "scope": "company:acme",
+    "requireReviewer": false,
+    "requireOwner": true,
+    "requireClient": false,
+    "linkExpiryDays": 14,
+    "custom": false,
+    "summary": "a team member approves (the default)",
+    "delegate": null,
+    "updatedBy": null,
+    "updatedAt": null
+  },
+  "delegateCandidates": [],
+  "agent": {
+    "agentKey": "social-media-manager",
+    "agentId": null,
+    "name": null,
+    "status": null,
+    "active": false,
+    "linkedBy": null,
+    "hire": null,
+    "candidates": [],
+    "missingSkills": []
+  },
+  "pendingPickers": [],
+  "routine": null,
+  "viewer": {
+    "userId": "user-member"
+  },
+  "canPost": true
+}

@@ -20,6 +20,7 @@ import {
   GetStarted,
   Inbox,
   LayoutDashboard,
+  LimitedClientPicker,
   Megaphone,
   Package,
   Page,
@@ -32,6 +33,7 @@ import {
   TrendingUp,
   AccessGate,
   errorText,
+  readLimitedTo,
   tokens,
   useAccess,
   usePluginSetupStatus,
@@ -133,10 +135,11 @@ function tabFrom(search: string, me = false): TabId {
 }
 
 /** The page frame for a client workspace: the shared workspace bar replaces the page title. */
-function WorkspaceFrame({ bar, message, children }: { bar: ReactNode; message?: string; children: ReactNode }) {
+function WorkspaceFrame({ bar, picker, message, children }: { bar: ReactNode; picker?: ReactNode; message?: string; children: ReactNode }) {
   return (
     <PageFrame accent="social">
       {bar}
+      {picker}
       <PageMessage message={message} />
       {children}
     </PageFrame>
@@ -269,6 +272,15 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
 
   const setTab = (id: TabId) => navigation.navigate(pagePath(id === "overview" ? "" : `tab=${id}`), { replace: true });
 
+  // A limited person (access stage B2) works in one of his clients' workspaces at a time: the load opens his first
+  // when the page names none, and the address follows it, so the header, links and composer are that client's.
+  const limitedTo = useMemo(() => (me ? null : readLimitedTo(snapshot?.limitedTo, snapshot?.clients)), [snapshot, me]);
+  const openClient = (client: string) => navigation.navigate(withClientParam(basePath, parseClientParam(client)), { replace: !scopeKey });
+  useEffect(() => {
+    if (limitedTo && !scopeKey) openClient(limitedTo.client);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [limitedTo, scopeKey]);
+
   // Own page: "finish setting up" (the same checklist Setup shows) and the weekly routine's real state.
   const setup = usePluginSetupStatus(PLUGIN_ID, !scopeKey && !me && !off ? context.companyId : null, setupKey);
   const routineRef = !scopeKey && !me ? snapshot?.routine ?? null : null;
@@ -380,11 +392,12 @@ function SocialWorkspace({ context, space }: PluginPageProps & { space: "company
             }}
             active="social"
             linkProps={navigation.linkProps}
-            ownPath="/social"
+            ownPath={limitedTo ? null : "/social"}
             ownLabel="Own social"
             actions={off ? undefined : <Row>{newPost}</Row>}
           />
         )}
+        picker={limitedTo && !off ? <LimitedClientPicker limitedTo={limitedTo} onPick={openClient} /> : null}
       >
         {body}
       </WorkspaceFrame>

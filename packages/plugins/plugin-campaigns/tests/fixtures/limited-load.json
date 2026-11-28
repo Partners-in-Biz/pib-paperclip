@@ -1,0 +1,141 @@
+{
+  "campaigns": [
+    {
+      "id": "c-acme",
+      "name": "Campaign c-acme",
+      "description": "",
+      "status": "draft",
+      "fromName": "Sam",
+      "fromLocal": "hello",
+      "replyTo": null,
+      "audienceTags": [],
+      "audienceMode": "client_contacts",
+      "client": {
+        "kind": "company",
+        "id": "acme",
+        "name": "Acme Ltd"
+      },
+      "startAt": null,
+      "endAt": null,
+      "approvalIssueId": null,
+      "delivery": "issue",
+      "winnerVariant": null,
+      "ownerAgentId": null,
+      "approvedByUserId": null,
+      "launchedAt": null,
+      "launchError": null,
+      "autopilotMode": "safe",
+      "pausedBy": null,
+      "steps": [],
+      "stats": {
+        "enrolled": 1,
+        "running": 1,
+        "done": 0
+      },
+      "approvalStatus": null,
+      "state": {
+        "key": "no-emails",
+        "label": "Draft",
+        "tone": "neutral",
+        "detail": "No emails written yet.",
+        "attention": null
+      },
+      "ownBrand": false
+    }
+  ],
+  "brands": [],
+  "brandsUnread": false,
+  "ownBrand": false,
+  "suppressed": 0,
+  "doNotContact": {
+    "sms": 0,
+    "whatsapp": 0
+  },
+  "series": {
+    "weeks": [
+      {
+        "start": "2026-09-06",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-09-13",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-09-20",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-09-27",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-10-04",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-10-11",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-10-18",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-10-25",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-11-01",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-11-08",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-11-15",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      },
+      {
+        "start": "2026-11-22",
+        "sent": 0,
+        "replies": 0,
+        "bounces": 0
+      }
+    ],
+    "byCampaign": {}
+  },
+  "settingsSaved": true,
+  "client": {
+    "kind": "company",
+    "id": "acme",
+    "name": "Acme Ltd",
+    "detail": null,
+    "found": true,
+    "contactCount": 1
+  },
+  "messaging": null
+}

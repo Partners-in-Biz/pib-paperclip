@@ -1,6 +1,6 @@
 {
   "name": "@partnersinbiz/plugin-social",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "private": true,
   "type": "module",
   "description": "Org and personal social accounts, post review, a publish job, inbox triage (built-in rules, or Jev) and the Growth Lab.",
@@ -25,7 +25,11 @@
     "@paperclipai/plugin-sdk": "workspace:*",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
     "esbuild": "^0.28.2",
+    "jsdom": "^30.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
   },
