@@ -1566,7 +1566,28 @@ async function listDealProductsRecord(ctx: PluginContext, viewer: Viewer, params
 async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>) {
   const name = requiredString(params, "name");
   const domain = normalizeDomain(optionalString(params, "domain"));
-  const [existing] = await companiesByDomainOrName(ctx, viewer.companyId, domain, name);
+  // A limited person (linked decision, enforce): the company is his alone. Nothing is read or written without a verified
+  // person, he cannot set the canary flag, and a match that is not his is refused with one fixed answer.
+  if (viewer.linkedCompanyIds && !viewer.userId) {
+    throw new CrmError("Could not verify who is creating this company, so nothing was created. Sign in and try again.");
+  }
+  if (viewer.linkedCompanyIds) refuseCanaryFlag(params);
+  const matches = await companiesByDomainOrName(ctx, viewer.companyId, domain, name);
+  const linkedIds = viewer.linkedCompanyIds;
+  const existing = linkedIds ? matches.find((match) => linkedIds.includes(match.id)) : matches[0];
+  if (linkedIds && matches.length && !existing) {
+    try {
+      await ctx.activity.log({
+        companyId: viewer.companyId,
+        message: "A limited person's company create matched a company that is not theirs",
+        entityType: "crm_company",
+        metadata: { userId: viewer.userId, agentId: viewer.agentId, runId: viewer.runId ?? null, attemptedName: name, attemptedDomain: domain },
+      });
+    } catch (error) {
+      ctx.logger.info("Could not write the refused-create audit entry", { error: error instanceof Error ? error.message : String(error) });
+    }
+    throw new CrmError("A company with this name or website is already in the CRM. Ask an owner or admin to add you to its Managed by.");
+  }
   if (existing) {
     const filled: string[] = [];
     if (domain && !existing.domain && !existing.humanOwned.includes("domain")) {
@@ -1621,9 +1642,32 @@ async function createCompany(ctx: PluginContext, viewer: Viewer, params: Record<
   return account;
 }
 
+/** A limited person cannot set the canary flag (custom `canary`, any value) or the tag `canary` (any case): it hides a company's hand-offs and revenue. */
+function refuseCanaryFlag(params: Record<string, unknown>): void {
+  const custom = params.custom && typeof params.custom === "object" && !Array.isArray(params.custom) ? (params.custom as Record<string, unknown>) : {};
+  const tags = params.tags == null ? [] : asStringList(params.tags);
+  const flagged = Object.keys(custom).some((key) => key.trim().toLowerCase() === "canary") || tags.some((tag) => tag.trim().toLowerCase() === "canary");
+  if (flagged) throw new CrmError("The canary flag can only be set by an owner or admin.");
+}
+
+/**
+ * The same rule on a built update patch: `patchFrom` spreads `custom` into the patch and `applyFieldPatch` writes a key that
+ * is a column into the column, so `custom: { tags: ["Canary"] }` must be caught here, not on the raw params. `checkTags`
+ * only for a company (the canary tag hides its hand-offs).
+ */
+function refuseCanaryPatch(viewer: Viewer, patch: Record<string, unknown>, checkTags: boolean): void {
+  if (!viewer.linkedCompanyIds) return;
+  const tags = checkTags && patch.tags != null ? asStringList(patch.tags) : [];
+  if (Object.keys(patch).some((key) => key.trim().toLowerCase() === "canary") || tags.some((tag) => tag.trim().toLowerCase() === "canary")) {
+    throw new CrmError("The canary flag can only be set by an owner or admin.");
+  }
+}
+
 async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
   const account = await requireAccount(ctx, viewer, companyIdOf(params));
   const lifecycleBefore = account.lifecycle;
+  const patch = patchFrom(params, ["name", "domain", "lifecycle", "currency", "tags", ...BILLING_KEYS]);
+  refuseCanaryPatch(viewer, patch, true);
   const result = applyFieldPatch({
     columns: {
       name: account.name,
@@ -1640,7 +1684,7 @@ async function updateCompany(ctx: PluginContext, viewer: Viewer, params: Record<
     custom: account.custom,
     humanOwned: account.humanOwned,
     columnKeys: columnKeysFor("company"),
-    patch: patchFrom(params, ["name", "domain", "lifecycle", "currency", "tags", ...BILLING_KEYS]),
+    patch,
     source,
   });
   normalizeAccountColumns(result.columns);
@@ -1766,6 +1810,8 @@ async function createContactRecord(ctx: PluginContext, viewer: Viewer, params: R
 async function updateContact(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
   const contact = await requireContact(ctx, viewer, contactIdOf(params));
   const lifecycleBefore = contact.lifecycle;
+  const contactPatch = patchFrom(params, ["name", "emails", "phones", "lifecycle", "tags", "nextActionKind", "nextActionDueAt"]);
+  refuseCanaryPatch(viewer, contactPatch, false);
   const result = applyFieldPatch({
     columns: {
       name: contact.name,
@@ -1779,7 +1825,7 @@ async function updateContact(ctx: PluginContext, viewer: Viewer, params: Record<
     custom: contact.custom,
     humanOwned: contact.humanOwned,
     columnKeys: columnKeysFor("contact"),
-    patch: patchFrom(params, ["name", "emails", "phones", "lifecycle", "tags", "nextActionKind", "nextActionDueAt"]),
+    patch: contactPatch,
     source,
   });
   contact.name = String(result.columns.name ?? contact.name).trim();
@@ -1939,12 +1985,14 @@ function linkParam(params: Record<string, unknown>, key: string, kind: "company"
  */
 async function updateDealRecord(ctx: PluginContext, viewer: Viewer, params: Record<string, unknown>, source: "agent" | "human") {
   const deal = await requireDeal(ctx, viewer, requiredString(params, "dealId"));
+  const dealPatch = patchFrom(params, ["title", "amountMinor", "currency"]);
+  refuseCanaryPatch(viewer, dealPatch, false);
   const result = applyFieldPatch({
     columns: { title: deal.title, amountMinor: deal.amountMinor, currency: deal.currency },
     custom: deal.custom,
     humanOwned: deal.humanOwned,
     columnKeys: columnKeysFor("deal"),
-    patch: patchFrom(params, ["title", "amountMinor", "currency"]),
+    patch: dealPatch,
     source,
   });
   const next: DealDraft = { ...deal, custom: result.custom };

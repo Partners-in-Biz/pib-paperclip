@@ -64,7 +64,7 @@ describe("CRM access guard", () => {
       ...both([
         "find-records", "bulk-tag-contacts", "update-company", "update-client-profile", "log-activity", "update-contact", "link-contact",
         "set-email-status", "score-contact", "export-person-data", "request-erasure", "move-deal", "update-deal", "call-list", "log-outcome",
-        "set-next-action",
+        "set-next-action", "create-company",
       ]),
       "crm.load", "crm.client-workspace", "crm.activities", "canvas.cards.resolve", "canvas.cards.search", "canvas.cards.related",
       "crm.set-human-owned", "crm.desk",
@@ -84,7 +84,7 @@ describe("CRM access guard", () => {
     expect(b3).toEqual(expect.arrayContaining(["crm.drive-folder", "crm.drive-files", "tool:wp-seo", "crm.wp-content", "tool:drive_file_save", "tool:list-client-sites", "tool:list-sign-documents", "tool:list-support-cases"]));
     // Reports (attribution and site events too), settings, sequences, creates, deletes, shares, consent and Drive trash stay closed.
     for (const key of [
-      "crm.reports-drive-catchup", "tool:pipeline-forecast", "crm.settings-status", "tool:create-pipeline", "crm.create-company", "crm.share-record", "crm.delete-company",
+      "crm.reports-drive-catchup", "tool:pipeline-forecast", "crm.settings-status", "tool:create-pipeline", "crm.share-record", "crm.delete-company",
       "tool:merge-contacts", "crm.sequence-detail", "tool:attribution-report", "crm.site-events-report", "tool:record-consent", "tool:start-new-client", "tool:drive_file_trash",
       "tool:drive_binding_set",
     ]) {

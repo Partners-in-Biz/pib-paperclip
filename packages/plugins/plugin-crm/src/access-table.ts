@@ -21,7 +21,7 @@
  * rows of sites (incl. the wp-* tools, lead forms, event keys), profile, e-sign, care, growth, projects and Drive: each
  * handler checks that the row's client resolves to one of his companies (`requireClient`, `visibleClients().listed`,
  * `requireDriveEntity`), and a row with no client (our own form, key, cost or project) is refused. Unscoped, so closed
- * to an own-companies person: creates of companies, contacts and deals, deletes, merges, shares and hand-offs to an
+ * to an own-companies person: creates of contacts and deals, deletes, merges, shares and hand-offs to an
  * agent, reports (attribution and site events too), settings, sequences, consent and Drive trash. The Drive page reads
  * are the actions `crm.drive-folder` and `crm.drive-files`; the CRM has no data handler.
  *
@@ -51,7 +51,7 @@ const scoped = (entry: AccessTableEntry): AccessTableEntry => (typeof entry === 
 export const SHARED_ROWS: Readonly<Record<string, AccessTableEntry>> = Object.freeze({
   // companies, contacts and their records
   ...rows(scoped(companies("view")), ["find-records"]),
-  "create-company": companies("create"),
+  "create-company": scoped(companies("create")),
   // Also page actions for Campaigns' Add people (PAR-9242).
   "import-contacts": contacts("create"),
   "bulk-tag-contacts": scoped(contacts("edit")),
