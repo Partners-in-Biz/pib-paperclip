@@ -21,6 +21,7 @@ import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
+import { useMemberRestrictionGate } from "@/hooks/useMemberRestrictionGate";
 import { issuesApi } from "@/api/issues";
 import { describeError } from "@/api/errors";
 import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
@@ -122,7 +123,10 @@ const filePhaseLabels: Record<ChatFileTransferPhase, string> = {
 
 export function useIssueChatBinding(companyId: string, issueId: string) {
   const { enabled, githubEnabled } = useChatConnectorsEnabled();
-  const queryEnabled = (enabled || githubEnabled) && Boolean(companyId && issueId) && !issueId.startsWith("chat:");
+  // PAR-15227: chat channels are closed for a person restricted here under `enforce` (PAR-12608 4.6).
+  const memberGate = useMemberRestrictionGate(companyId);
+  const queryEnabled = (enabled || githubEnabled) && Boolean(companyId && issueId) && !issueId.startsWith("chat:")
+    && !memberGate.closed;
   const query = useQuery({
     queryKey: ["issue-chat-binding", companyId, issueId],
     queryFn: () => chatEndpointsApi.getIssueBinding(issueId),

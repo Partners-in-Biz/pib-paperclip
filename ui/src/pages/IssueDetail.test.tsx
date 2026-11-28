@@ -5702,6 +5702,28 @@ describe("IssueDetail", () => {
     ).not.toBeNull();
   });
 
+  it.each([["enforce", false], ["report", true]] as const)(
+    "offers the file viewer (and so its file list) only when open, restricted under %s (PAR-15227)",
+    async (mode, open) => {
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-r" },
+        memberRestrictions: [{ companyId: "company-1", restricted: true, mode }] });
+      mockIssuesApi.get.mockResolvedValue(createIssue());
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableIssuePlanDecompositions: false,
+        enableExperimentalFileViewer: true,
+      });
+      await act(async () => {
+        renderIssueView();
+      });
+      await flushReact();
+      await flushReact();
+      expect(container.textContent).toContain("Issue detail smoke");
+      expect(Boolean(container.querySelector('[aria-label="Open file in this issue"]'))).toBe(open);
+      const panel = mockTaskSidePanelRender.mock.calls.at(-1)?.[0] as { fileTabsEnabled?: boolean } | undefined;
+      if (panel) expect(panel.fileTabsEnabled).toBe(open);
+    },
+  );
+
   it("starts a planning-mode task as chat-only until its plan document exists", async () => {
     mockSetBreadcrumbToolbar.mockClear();
     mockSetBreadcrumbPanelControl.mockClear();
