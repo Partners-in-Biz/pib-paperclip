@@ -188,6 +188,7 @@ import { crmCardKinds } from "./canvas-cards.js";
 import { CRM_TOOLS } from "./tools.js";
 import { SKILLS } from "./skills.js";
 import { CRM_MUTATIONS, crmCompanyIds, emitChanges, emitContactDeleted, touchContact } from "./sync.js";
+import { managedAccountIds, managersView, setManagers } from "./managers.js";
 import { cockpitSnapshot, publishAllCockpit } from "./cockpit.js";
 import {
   deleteCompanyRecord,
@@ -305,7 +306,12 @@ const plugin = definePlugin({
     registerCallNotedSubscriber(ctx);
     registerPrivacy(ctx);
     // Every action, tool and API route goes through the access guard (PAR-12679). With the switch off it is a pass-through.
-    const guard = createAccessGuard(ctx, { pluginKey: PLUGIN_ID, table: ACCESS_TABLE });
+    // Stage B (PAR-12581): a limited person's own companies are the ones he owns or manages here, read live.
+    const guard = createAccessGuard(ctx, {
+      pluginKey: PLUGIN_ID,
+      table: ACCESS_TABLE,
+      linkedCompanies: (companyId, userId) => managedAccountIds(ctx, companyId, userId),
+    });
     accessGuard = guard;
     const registerAction = (
       key: string,
@@ -358,6 +364,11 @@ const plugin = definePlugin({
     registerAction("crm.create-company", (params, context) => createCompanyAction(ctx, context, params));
     registerAction("crm.update-company", (params, context) => updateCompanyAction(ctx, context, params));
     registerAction("crm.delete-company", (params, context) => deleteCompanyAction(ctx, context, params));
+    // "Managed by" (stage B): owner or admin only, checked in the handler with any switch setting.
+    registerAction("crm.set-managers", async (params, context) => {
+      requireUser(context, "change who manages a company");
+      return setManagers(ctx, await actionViewer(ctx, context), params);
+    });
     registerAction("crm.create-contact", (params, context) => createContactAction(ctx, context, params));
     registerAction("crm.update-contact", (params, context) => updateContactAction(ctx, context, params));
     // The same import and bulk tag as the tools, for a page (Campaigns' Add people on our own campaigns, PAR-9242).
@@ -1201,6 +1212,7 @@ async function clientWorkspace(ctx: PluginContext, viewer: Viewer, ref: ClientRe
     found: true as const,
     care,
     hosted: account ? await getHosted(ctx, account.id).catch(() => null) : null,
+    managers: account ? await managersView(ctx, viewer, account.id) : null,
     agreements: agreementsAndGrowth.agreements,
     growth: agreementsAndGrowth.growth,
     company: account,

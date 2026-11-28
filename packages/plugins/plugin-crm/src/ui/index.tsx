@@ -88,6 +88,8 @@ import { EmailText, FieldList, MoreMenu, whenText, type FieldRow } from "./parts
 import { DeliveryPill, GmailBanner, SequenceSheet, deliveryText, useGmailState, type SequenceView } from "./sequence.js";
 import { dialerHref, TELEPHONY_PLUGIN_KEY } from "../phone-link.js";
 import { DriveFolderLink } from "./DriveFolderLink.js";
+import { ManagedByCard } from "./managed-by.js";
+import type { ManagersData } from "./managed-by-view.js";
 import { CrmGiveButton, LogOutcomeModal, ReachButtons, SalesDesk, SalesSnapshot, deskBadge, type DeskView, type OutcomeTarget, type QueueItem } from "./desk.js";
 import { Sun } from "@partnersinbiz/pib-plugin-ui";
 
@@ -1172,6 +1174,8 @@ interface WorkspaceData {
   agreements?: AgreementsView | null;
   /** The hosted company this client's platform service provisioned (companies only). */
   hosted?: { hostedCompanyId: string | null; hostedPlan: string | null } | null;
+  /** Who manages the company (stage B); null for a contact. */
+  managers?: ManagersData | null;
   /** Where enquiries came from and the site visit counters (null when it could not be read). */
   growth?: GrowthView | null;
 }
@@ -1221,6 +1225,7 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
   const readBrand = useCrmAction("crm.extract-brand-from-site");
   const setEmailStatus = useCrmAction("crm.set-email-status");
   const deleteCompany = useCrmAction("crm.delete-company");
+  const setManagers = useCrmAction("crm.set-managers");
   const saveSite = useCrmAction("crm.save-client-site");
   const deleteSite = useCrmAction("crm.delete-client-site");
   const connectSite = useCrmAction("crm.connect-client-site");
@@ -1511,6 +1516,14 @@ function ClientWorkspace({ companyId, client, companyPrefix }: { companyId: stri
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 380px), 1fr))", gap: 16, alignItems: "start" }}>
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
           {company ? <CompanyDetails company={company} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} companyPrefix={companyPrefix} /> : null}
+          {company && data.managers ? (
+            <ManagedByCard
+              companyId={companyId}
+              companyRecordId={company.id}
+              managers={data.managers}
+              onSave={(params) => run(() => setManagers(params), "Managers saved")}
+            />
+          ) : null}
           {contact ? <ContactDetails contact={contact} onSave={saveDetails} locking={locking} onLock={(keys, lock, label) => void toggleLock(keys, lock, label)} companyPrefix={companyPrefix} /> : null}
           {/* The client's profile: a company, or a contact who is a client in their own right (a sole trader). */}
           {company || companies.length === 0 ? <ClientProfileCard profile={data.profile ?? null} onSave={saveProfile} onReadBrand={(url) => readBrand({ client: `${client.kind}:${client.id}`, ...(url ? { url } : {}) }) as Promise<BrandFromSite>} /> : null}
