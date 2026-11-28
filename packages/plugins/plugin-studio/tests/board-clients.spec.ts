@@ -6,7 +6,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import { MEMBER_RESTRICTED } from "@partnersinbiz/pib-plugin-kit";
+import { accessCompanyScope, MEMBER_RESTRICTED } from "@partnersinbiz/pib-plugin-kit";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { STUDIO_ACCESS_TABLE } from "../src/access-table.js";
@@ -93,6 +93,8 @@ async function studio(opts: { linkDown?: boolean; links?: Link[]; generate?: boo
     return { rowCount: 1 };
   };
   await plugin.definition.setup(harness.ctx);
+  // Setup's access row is stored (off): with none, the guard refuses a restricted member before Studio's own rules (H3a).
+  await harness.ctx.state.set(accessCompanyScope(CO), { mode: "off", rev: 1, userIds: [], receivedAt: new Date().toISOString() });
   const as = (userId: string, restricted = false) => ({ companyId: CO, actor: { type: "user" as const, userId, onBehalfOfUserId: userId, onBehalfOfRestricted: restricted } });
   const linkWrites = () => writes.filter((w) => /board_client_links/.test(w.sql));
   const genWrites = () => writes.filter((w) => !/board_client_links/.test(w.sql));

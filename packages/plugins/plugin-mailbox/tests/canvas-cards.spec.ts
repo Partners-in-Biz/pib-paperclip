@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { accessCompanyScope } from "@partnersinbiz/pib-plugin-kit";
 import { mailCard, mailHref } from "../src/canvas-cards.js";
 import type { MessageRow } from "../src/gmail/types.js";
 import manifest from "../src/manifest.js";
@@ -34,7 +35,8 @@ async function boot() {
   queries.length = 0;
   const act = (key: string, params: Record<string, unknown>, actor: Record<string, unknown>) => harness.performAction<Record<string, unknown>>(key, params, { companyId: CO, actor } as never);
   const mailQueries = () => queries.filter((sql) => sql.includes(`${NAMESPACE}.messages`) || sql.includes(`${NAMESPACE}.crm_`));
-  return { act, mailQueries };
+  const storeAccessRow = () => harness.ctx.state.set(accessCompanyScope(CO), { mode: "off", rev: 1, userIds: [], receivedAt: new Date().toISOString() });
+  return { act, mailQueries, storeAccessRow };
 }
 
 const items = { items: [{ type: "card-mail", id: "m-1" }] };
@@ -70,8 +72,11 @@ describe("refused callers never reach the mail", () => {
   });
 
   it("a restricted member: hidden and no groups; a missing restriction answer: MEMBER_RESTRICTION_UNAVAILABLE", async () => {
-    const { act, mailQueries } = await boot();
+    const { act, mailQueries, storeAccessRow } = await boot();
     const restricted = { type: "user", userId: "u2", onBehalfOfUserId: "u2", onBehalfOfRestricted: true };
+    // H3a: with no access row in this plugin, the guard refuses him before the card helper is asked.
+    expect(await act("canvas.cards.resolve", items, restricted)).toMatchObject({ refused: true, code: "PERMISSION_DENIED" });
+    await storeAccessRow();
     expect(await act("canvas.cards.resolve", items, restricted)).toEqual({ cards: [{ type: "card-mail", id: "m-1", hidden: true }] });
     expect(await act("canvas.cards.related", of, restricted)).toEqual({ groups: [] });
     expect(await act("canvas.cards.resolve", items, { type: "user", userId: "u3" })).toMatchObject({ refused: true, code: "MEMBER_RESTRICTION_UNAVAILABLE" });

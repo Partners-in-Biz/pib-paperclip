@@ -2,6 +2,7 @@
  * The invoice card on a Planning Canvas board (PAR-14420; plan PAR-14389 E, paths 1 and 8).
  * Real database: the card search is new SQL (`searchInvoices`).
  */
+import { accessCompanyScope } from "@partnersinbiz/pib-plugin-kit";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import manifest from "../src/manifest.js";
 import { NAMESPACE } from "../src/namespace.js";
@@ -61,6 +62,8 @@ describe.skipIf(!available)("invoice cards (postgres)", () => {
     await h.reset();
     h.config.set(COMPANY, { ...SETTINGS });
     h.config.set(OTHER_COMPANY, { ...SETTINGS });
+    // Setup's access row is stored (off), so a restricted member reaches the card helper (H3a refuses him with no row).
+    for (const co of [COMPANY, OTHER_COMPANY]) await h.ctx.state.set(accessCompanyScope(co), { mode: "off", rev: 1, userIds: [], receivedAt: new Date().toISOString() });
     await seedClient(h, { id: "ct-lumen", name: "Lumen Digital", email: "ap@lumen.test" });
     await seedClient(h, { id: "ct-jo", name: "Jo Bloggs & 100% Sons_" });
     await h.client.query(`INSERT INTO ${NAMESPACE}.crm_contacts (id, company_id, name, emails, updated_at) VALUES ('ct-foreign', $1, 'Foreign Ltd', '{}', now())`, [OTHER_COMPANY]);

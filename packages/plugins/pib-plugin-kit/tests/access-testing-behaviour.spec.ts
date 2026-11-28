@@ -59,11 +59,16 @@ describe("access test helper: behaviour, agent and API route checks", () => {
   it("item 6: routes answered outside the guard are not refused", async () => {
     const { problems } = await check("route-bypass");
     expect(problems.every((p) => p.startsWith("API route") || p.startsWith("unknown API route"))).toBe(true);
-    expect(problems).toHaveLength(7);
-    expect(problems.slice(4)).toEqual([
+    expect(problems).toHaveLength(9);
+    expect(problems.slice(4, 7)).toEqual([
       'API route "items", enforce, operator with no grant: expected the refusal form, got {"status":200,"body":[]}, not through the access guard of fixture.route-bypass (is createAccessGuard given pluginKey "fixture.route-bypass"?)',
       'API route "items", enforce, agent on a run working for an operator with no grant: expected the refusal form, got {"status":200,"body":[]}, not through the access guard of fixture.route-bypass (is createAccessGuard given pluginKey "fixture.route-bypass"?)',
       'unknown API route key, enforce, owner: expected the refusal form, got {"status":200,"body":[]}, not through the access guard of fixture.route-bypass (is createAccessGuard given pluginKey "fixture.route-bypass"?)',
+    ]);
+    // Item 7 (H3): the host's restricted mark with no row, and a key with no run.
+    expect(problems.slice(7)).toEqual([
+      'API route "items", switch absent, operator marked restricted by core: expected the refusal form, got {"status":200,"body":[]}, not through the access guard of fixture.route-bypass (is createAccessGuard given pluginKey "fixture.route-bypass"?)',
+      'API route "items", enforce, agent key with no run working for the owner (host\'s person): expected today\'s result (the call reaches its handler), got {"status":200,"body":[]}, not through the access guard of fixture.route-bypass (is createAccessGuard given pluginKey "fixture.route-bypass"?)',
     ]);
   });
 

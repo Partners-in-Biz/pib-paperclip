@@ -6,6 +6,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { accessCompanyScope } from "@partnersinbiz/pib-plugin-kit";
 import { SqlStore } from "../src/db.js";
 import manifest from "../src/manifest.js";
 import { NAMESPACE } from "../src/namespace.js";
@@ -148,6 +149,8 @@ describe.skipIf(!available)("email cards (real Postgres)", () => {
     harness.seed({ companies: [{ id: CO, name: "Co", issuePrefix: "CO" } as never, { id: CO2, name: "Co 2", issuePrefix: "CT" } as never] });
     (harness.ctx as unknown as { db: unknown }).db = pg.db;
     await plugin.definition.setup(harness.ctx);
+    // Setup's access row is stored (off), so a restricted member reaches the card helper (H3a refuses him with no row).
+    for (const co of [CO, CO2]) await harness.ctx.state.set(accessCompanyScope(co), { mode: "off", rev: 1, userIds: [], receivedAt: new Date().toISOString() });
     const act = <T = Record<string, unknown>>(key: string, params: Record<string, unknown>, actor: Actor = ADMIN, companyId = CO) =>
       harness.performAction<T>(key, params, { companyId, actor } as never);
     const resolve = async (ids: string[], actor: Actor = ADMIN, companyId = CO) =>

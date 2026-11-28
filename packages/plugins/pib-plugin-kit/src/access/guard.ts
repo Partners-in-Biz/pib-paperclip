@@ -18,6 +18,20 @@
  * | agent, run not found / ended / read fails         | refused                           |
  * | agent with no `runId`                             | refused                           |
  *
+ * The acting person from the host (PAR-12608 4.10, H3). A core that sends
+ * `onBehalfOfUserId` on the caller has already decided who the call works for
+ * (a run's person, a long-lived key's person, a connection's person), so the
+ * guard uses that person and never looks a run id up:
+ *
+ * | caller, host sent the fields                      | decision                          |
+ * |---------------------------------------------------|-----------------------------------|
+ * | agent, `onBehalfOfUserId` set (with or without run) | as if that person had called    |
+ * | agent, `onBehalfOfUserId` null                    | refused (no run / no person)      |
+ * | person                                            | as above (his own id)             |
+ * | `onBehalfOfRestricted` and no company row          | refused, even with the switch absent |
+ *
+ * Without the fields (a core older than H3) everything stays as in the first table.
+ *
  * `enforce` answers a refusal (an action: the 200 refusal form; a tool: a tool
  * `error`; an API route: a 403 with the refusal form). `report` lets the call
  * through. Both report the refusal to Setup.
@@ -33,6 +47,7 @@
 import type { PluginApiRequestInput, PluginApiResponse, PluginContext, PluginPerformActionContext, PluginToolDeclaration, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { BYPASS, decideAccess, permissionKey, type Access, type Decision, type PermissionAction } from "../permissions.js";
 import { normalizeToolResult } from "../tool-result.js";
+import { hostActingPerson, type HostActingPerson } from "./acting-person.js";
 import { CANNOT_VERIFY_ACCESS, cachedAccessFor, cachedActingPerson, noteAccessReceived } from "./cache.js";
 import { ACCESS_ME_ACTION, allowedKeys, areaKeys, areasOf, type AccessMe } from "./me.js";
 import { SETUP_PLUGIN } from "../setup.js";
@@ -62,6 +77,8 @@ export interface AccessCaller {
   userId: string | null;
   agentId: string | null;
   runId: string | null;
+  /** The acting person the host sent (H3); absent from a core older than H3. */
+  onBehalfOf?: HostActingPerson;
 }
 
 export type AccessAllowed = Extract<Decision, { allowed: true }>;
@@ -115,6 +132,7 @@ const RUN_REASONS = {
 const NO_RUN = "This agent call has no run, so the person it works for is unknown";
 const NOT_OPEN = "This is not open to limited members";
 const UNKNOWN_ROUTE = "This route is not in the plugin's access table";
+const NO_ROW = "Your access is restricted, and this app has no access settings for this company yet";
 const OWN_COMPANIES = "Your access is limited to your own companies, and this is not yet limited that way";
 
 /**
@@ -168,7 +186,13 @@ export function actionCaller(context: PluginPerformActionContext | undefined): A
   const a = context?.actor;
   const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
   const type = a?.type === "agent" || a?.type === "user" ? a.type : "system";
-  return { type, userId: str(a?.userId), agentId: str(a?.agentId), runId: str(a?.runId) };
+  return withHostPerson({ type, userId: str(a?.userId), agentId: str(a?.agentId), runId: str(a?.runId) }, a);
+}
+
+/** Adds the host's acting person when the host sent one (never to `system`: the host itself has none). */
+function withHostPerson(caller: AccessCaller, raw: Parameters<typeof hostActingPerson>[0]): AccessCaller {
+  const host = caller.type === "system" ? null : hostActingPerson(raw);
+  return host ? { ...caller, onBehalfOf: host } : caller;
 }
 
 /**
@@ -179,20 +203,16 @@ export function actionCaller(context: PluginPerformActionContext | undefined): A
  */
 export function routeCaller(actor: Partial<PluginApiRequestInput["actor"]> | null | undefined): AccessCaller {
   const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
-  if (actor?.actorType === "agent") return { type: "agent", userId: null, agentId: str(actor.agentId), runId: str(actor.runId) };
-  if (actor?.actorType === "user") return { type: "user", userId: str(actor.userId) ?? str(actor.actorId), agentId: null, runId: str(actor.runId) };
+  if (actor?.actorType === "agent") return withHostPerson({ type: "agent", userId: null, agentId: str(actor.agentId), runId: str(actor.runId) }, actor);
+  if (actor?.actorType === "user") return withHostPerson({ type: "user", userId: str(actor.userId) ?? str(actor.actorId), agentId: null, runId: str(actor.runId) }, actor);
   return { type: "user", userId: null, agentId: null, runId: null };
 }
 
 /** A refused API route: 403 with the refusal form, so a page `fetch` does not read it as data. */
 export const routeRefusal = (reason: string): PluginApiResponse => ({ status: 403, body: permissionRefusal(reason) });
 
-export const toolCaller = (run: ToolRunContext): AccessCaller => ({
-  type: "agent",
-  userId: null,
-  agentId: run?.agentId || null,
-  runId: run?.runId || null,
-});
+export const toolCaller = (run: ToolRunContext): AccessCaller =>
+  withHostPerson({ type: "agent", userId: null, agentId: run?.agentId || null, runId: run?.runId || null }, run);
 
 export function createAccessGuard(ctx: PluginContext, options: AccessGuardOptions): AccessGuard {
   const { pluginKey, table } = options;
@@ -210,7 +230,13 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
   async function accessOf(companyId: string, caller: AccessCaller): Promise<{ access: Access } | { reason: string; userId: string | null; unverified: boolean }> {
     if (caller.type === "system") return { access: BYPASS };
     let userId = caller.userId;
-    if (caller.type === "agent") {
+    const host = caller.onBehalfOf;
+    if (host?.userId) {
+      // H3: core computed the person (and checked a run a long-lived key names, H5); no run lookup.
+      userId = host.userId;
+    } else if (host && caller.type === "agent") {
+      return { reason: caller.runId ? RUN_REASONS["no-person"] : NO_RUN, userId: null, unverified: false };
+    } else if (caller.type === "agent") {
       if (!caller.agentId || !caller.runId) return { reason: NO_RUN, userId: null, unverified: false };
       const run = await cachedActingPerson(ctx, { companyId, agentId: caller.agentId, runId: caller.runId });
       if (!run.ok) return { reason: RUN_REASONS[run.reason], userId: null, unverified: run.reason === "read-failed" };
@@ -235,8 +261,14 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
       const admin = caller.type === "system" || (caller.type === "user" && caller.userId !== null);
       return admin ? { check: { mode: "off", caller, decision: ALL } } : { refused: "This call names no company" };
     }
-    const { mode } = await readAccessSwitch(ctx, companyId, pluginKey, { now: options.now });
-    if (mode === "off") return { check: { mode, caller, decision: ALL } };
+    const { mode, source } = await readAccessSwitch(ctx, companyId, pluginKey, { now: options.now });
+    if (mode === "off") {
+      if (!(source === "absent" && caller.onBehalfOf?.restricted)) return { check: { mode, caller, decision: ALL } };
+      // H3: core enforces this person's restriction, and this plugin has no row to decide by.
+      const userId = caller.onBehalfOf.userId;
+      await reportAccessRefusal(ctx, "enforce", { companyId, pluginKey, userId, key, permission: null, viaAgentId: caller.type === "agent" ? caller.agentId : null }, { now: options.now });
+      return { refused: NO_ROW };
+    }
     const entry = Object.hasOwn(table, key) && !probe()?.hidden.has(key) ? table[key] : undefined;
     const viaAgentId = caller.type === "agent" ? caller.agentId : null;
     if (strictKey && entry === undefined) {
@@ -261,7 +293,8 @@ export function createAccessGuard(ctx: PluginContext, options: AccessGuardOption
       const admin = caller.type === "system" || (caller.type === "user" && caller.userId !== null);
       return admin ? { mode: "off", open: true, permissions: every() } : permissionRefusal("This call names no company");
     }
-    const { mode } = await readAccessSwitch(ctx, companyId, pluginKey, { now: options.now });
+    const { mode, source } = await readAccessSwitch(ctx, companyId, pluginKey, { now: options.now });
+    if (mode === "off" && source === "absent" && caller.onBehalfOf?.restricted) return { mode, open: false, permissions: [] };
     if (mode !== "enforce") return { mode, open: true, permissions: every() };
     let a: Awaited<ReturnType<typeof accessOf>>;
     try {

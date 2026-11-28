@@ -106,6 +106,9 @@ async function studio(opts: { cards?: boolean; generate?: boolean; accessMode?: 
     await harness.ctx.state.set(accessCompanyScope(CO), { mode: opts.accessMode, rev: 1, userIds: [MEMBER], receivedAt: at });
     // The positive control: MEMBER holds Studio's view grant, OUTSIDER holds none.
     await harness.ctx.state.set(accessGrantScope(CO, MEMBER), { allow: [permissionKey("studio.work", "view")], scopeOverrides: { "studio.work": "all" } });
+  } else {
+    // Setup's access row is stored (off): with none, the guard refuses a restricted member before Studio's own rules (H3a).
+    await harness.ctx.state.set(accessCompanyScope(CO), { mode: "off", rev: 1, userIds: [], receivedAt: at });
   }
   const as = (userId: string, restricted = false) => ({ companyId: CO, actor: { type: "user" as const, userId, onBehalfOfUserId: userId, onBehalfOfRestricted: restricted } });
   return { harness, as, sqlSeen };
