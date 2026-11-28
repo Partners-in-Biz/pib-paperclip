@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import { agentInheritedEnv } from "@paperclipai/adapter-utils/server-utils";
 
 const execFileAsync = promisify(execFile);
 
@@ -137,8 +138,9 @@ interface ClaudeAuthStatus {
 
 export async function readClaudeAuthStatus(): Promise<ClaudeAuthStatus | null> {
   try {
+    // No agent turn, but still a child: allowlisted server env only (PAR-15276).
     const { stdout } = await execFileAsync("claude", ["auth", "status"], {
-      env: process.env,
+      env: agentInheritedEnv(process.env),
       timeout: 5_000,
       maxBuffer: 1024 * 1024,
     });
